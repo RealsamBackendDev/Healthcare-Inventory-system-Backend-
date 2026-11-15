@@ -57,7 +57,62 @@ const getStructure = async () => {
   }));
 };
 
+const getLocalGovernmentOverview = async (localGovernmentId) => {
+  const localGovernment = await repository.findLocalGovernment(localGovernmentId);
+  if (!localGovernment) {
+    throw new NotFoundError('Local government was not found');
+  }
+
+  const [centres, locations, settings] = await Promise.all([
+    repository.listCentresForLocalGovernment(localGovernmentId),
+    repository.listStockLocations(localGovernmentId),
+    repository.listLocalGovernmentSettings(localGovernmentId)
+  ]);
+
+  return {
+    localGovernment: {
+      id: localGovernment.id,
+      name: localGovernment.name,
+      code: localGovernment.code
+    },
+    state: {
+      id: localGovernment.state_id,
+      name: localGovernment.state_name,
+      code: localGovernment.state_code
+    },
+    centres: centres.map((centre) => ({
+      id: centre.id,
+      name: centre.name,
+      code: centre.code,
+      address: centre.address,
+      isActive: centre.is_active,
+      stockLocation: centre.stock_location_id
+        ? {
+            id: centre.stock_location_id,
+            name: centre.stock_location_name,
+            code: centre.stock_location_code
+          }
+        : null
+    })),
+    locations: locations.map((location) => ({
+      id: location.id,
+      name: location.name,
+      code: location.code,
+      locationType: location.location_type,
+      isActive: location.is_active,
+      healthcareCentreId: location.healthcare_centre_id,
+      centreName: location.centre_name
+    })),
+    settings: settings.map((setting) => ({
+      key: setting.key,
+      value: setting.value,
+      description: setting.description
+    }))
+  };
+};
+
 module.exports = {
   getActiveCentre,
-  getStructure
+  getStructure,
+  getLocalGovernmentOverview
 };

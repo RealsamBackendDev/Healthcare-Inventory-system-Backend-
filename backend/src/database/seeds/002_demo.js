@@ -81,7 +81,10 @@ const seedDemo = async () => {
     }
 
     const { rows: drugCountRows } = await client.query(
-      'SELECT count(*)::int AS count FROM drugs WHERE healthcare_centre_id = $1',
+      `SELECT count(*)::int AS count
+         FROM drugs d
+         JOIN healthcare_centres hc ON hc.id = $1
+        WHERE d.local_government_id = hc.local_government_id`,
       [centre.id]
     );
     if (drugCountRows[0].count > 0) {
@@ -107,11 +110,21 @@ const seedDemo = async () => {
     for (const drug of demoDrugs) {
       const { rows } = await client.query(
         `INSERT INTO drugs
-           (healthcare_centre_id, code, name, generic_name, brand_name, strength, dosage_form, unit_of_measure, minimum_stock_level, created_by)
-         VALUES ($1, $2, $3, $3, NULL, $4, $5, $6, $7, $8)
+           (local_government_id, code, name, generic_name, brand_name, strength, dosage_form, unit_of_measure, created_by)
+         SELECT hc.local_government_id, $2, $3, $3, NULL, $4, $5, $6, $7
+           FROM healthcare_centres hc
+          WHERE hc.id = $1
          RETURNING id`,
-        [centre.id, drug.code, drug.name, drug.strength, drug.dosageForm, drug.unitOfMeasure, drug.minimumStockLevel, administrator.id]
+        [centre.id, drug.code, drug.name, drug.strength, drug.dosageForm, drug.unitOfMeasure, administrator.id]
       );
+
+      await client.query(
+        `INSERT INTO facility_drug_settings (healthcare_centre_id, drug_id, minimum_stock_level)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (healthcare_centre_id, drug_id) DO NOTHING`,
+        [centre.id, rows[0].id, drug.minimumStockLevel]
+      );
+
       drugIds.set(drug.code, rows[0].id);
     }
 

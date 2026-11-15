@@ -40,9 +40,13 @@ const listRequisitions = async ({ healthcareCentreId, status, search, from, to, 
 
 const findDrugs = async (client, healthcareCentreId, drugIds) => {
   const { rows } = await client.query(
-    `SELECT id, code, name, unit_of_measure, minimum_stock_level, is_active
-       FROM drugs
-      WHERE healthcare_centre_id = $1 AND id = ANY($2::uuid[])`,
+    `SELECT d.id, d.code, d.name, d.unit_of_measure,
+            COALESCE(fds.minimum_stock_level, 0) AS minimum_stock_level, d.is_active
+       FROM drugs d
+       JOIN healthcare_centres hc ON hc.id = $1
+       LEFT JOIN facility_drug_settings fds ON fds.drug_id = d.id AND fds.healthcare_centre_id = $1
+      WHERE d.local_government_id = hc.local_government_id
+        AND d.id = ANY($2::uuid[])`,
     [healthcareCentreId, drugIds]
   );
   return rows;
@@ -69,10 +73,14 @@ const lockRequisition = async (client, healthcareCentreId, requisitionId) => {
 const listItems = async (requisitionId) => {
   const { rows } = await query(
     `SELECT ri.id, ri.drug_id, ri.requested_quantity, ri.is_auto_generated,
-            d.code AS drug_code, d.name AS drug_name, d.unit_of_measure, d.minimum_stock_level, d.is_active,
+            d.code AS drug_code, d.name AS drug_name, d.unit_of_measure,
+            COALESCE(fds.minimum_stock_level, 0) AS minimum_stock_level, d.is_active,
             COALESCE(stock.usable_quantity, 0) AS usable_quantity
        FROM requisition_items ri
        JOIN drugs d ON d.id = ri.drug_id
+       LEFT JOIN facility_drug_settings fds
+              ON fds.drug_id = d.id
+             AND fds.healthcare_centre_id = (SELECT healthcare_centre_id FROM requisitions WHERE id = $1)
        LEFT JOIN (
          SELECT drug_id, SUM(quantity) AS usable_quantity
            FROM batches
@@ -227,16 +235,19 @@ const findShortages = async (healthcareCentreId) => {
           AND r.status IN ('draft', 'pending_approval', 'approved')
         GROUP BY ri.drug_id
      )
-     SELECT d.id AS drug_id, d.code, d.name, d.unit_of_measure, d.minimum_stock_level,
+     SELECT d.id AS drug_id, d.code, d.name, d.unit_of_measure,
+            COALESCE(fds.minimum_stock_level, 0) AS minimum_stock_level,
             COALESCE(usable.usable_quantity, 0) AS usable_quantity,
             COALESCE(open_cover.covered_quantity, 0) AS covered_quantity,
-            (d.minimum_stock_level - COALESCE(usable.usable_quantity, 0) - COALESCE(open_cover.covered_quantity, 0)) AS suggested_quantity
+            (COALESCE(fds.minimum_stock_level, 0) - COALESCE(usable.usable_quantity, 0) - COALESCE(open_cover.covered_quantity, 0)) AS suggested_quantity
        FROM drugs d
+       JOIN healthcare_centres hc ON hc.id = $1
+       LEFT JOIN facility_drug_settings fds ON fds.drug_id = d.id AND fds.healthcare_centre_id = $1
        LEFT JOIN usable ON usable.drug_id = d.id
        LEFT JOIN open_cover ON open_cover.drug_id = d.id
-      WHERE d.healthcare_centre_id = $1
+      WHERE d.local_government_id = hc.local_government_id
         AND d.is_active = TRUE
-        AND (d.minimum_stock_level - COALESCE(usable.usable_quantity, 0) - COALESCE(open_cover.covered_quantity, 0)) > 0.000000001
+        AND (COALESCE(fds.minimum_stock_level, 0) - COALESCE(usable.usable_quantity, 0) - COALESCE(open_cover.covered_quantity, 0)) > 0.000000001
       ORDER BY d.name`,
     [healthcareCentreId]
   );

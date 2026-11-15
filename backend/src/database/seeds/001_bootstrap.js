@@ -6,7 +6,7 @@ const {
   PERMISSION_DEFINITIONS,
   SETTING_KEYS
 } = require('../../shared/constants');
-const { DEFAULT_SETTINGS } = require('../../shared/utils/settings');
+const { DEFAULT_SETTINGS, DEFAULT_LOCAL_GOVERNMENT_SETTINGS } = require('../../shared/utils/settings');
 
 const ensureOrganisation = async (client) => {
   const { rows: stateRows } = await client.query(
@@ -33,7 +33,46 @@ const ensureOrganisation = async (client) => {
     [localGovernmentRows[0].id, environment.bootstrap.centreName, environment.bootstrap.centreCode]
   );
 
-  return centreRows[0];
+  return {
+    centre: centreRows[0],
+    localGovernment: localGovernmentRows[0]
+  };
+};
+
+const ensureStockLocations = async (client, centre, localGovernment) => {
+  await client.query(
+    `INSERT INTO stock_locations (local_government_id, healthcare_centre_id, location_type, name, code)
+     VALUES ($1, $2, 'facility', $3, $4)
+     ON CONFLICT DO NOTHING`,
+    [localGovernment.id, centre.id, `${centre.name} Main Store`, `${centre.code}-MAIN`]
+  );
+
+  await client.query(
+    `INSERT INTO stock_locations (local_government_id, location_type, name, code)
+     VALUES ($1, 'lg_warehouse', $2, $3)
+     ON CONFLICT DO NOTHING`,
+    [localGovernment.id, `${localGovernment.name} LG Medical Warehouse`, `${localGovernment.code}-WAREHOUSE`]
+  );
+};
+
+const ensureLocalGovernmentSettings = async (client, localGovernmentId) => {
+  const descriptions = {
+    [SETTING_KEYS.LG_RECEIPT_QUANTITY_THRESHOLD]: 'Quantity above which a warehouse receipt needs a second Logistician',
+    [SETTING_KEYS.LG_RECEIPT_VALUE_THRESHOLD]: 'Value above which a warehouse receipt needs a second Logistician',
+    [SETTING_KEYS.LG_DISPATCH_QUANTITY_THRESHOLD]: 'Quantity above which a dispatch needs a second Logistician',
+    [SETTING_KEYS.LG_CORRECTION_QUANTITY_THRESHOLD]: 'Quantity above which a warehouse correction needs a second Logistician',
+    [SETTING_KEYS.LG_CORRECTION_VALUE_THRESHOLD]: 'Value above which a warehouse correction needs a second Logistician',
+    [SETTING_KEYS.LG_APPROVAL_WINDOW_HOURS]: 'Window for adding up threshold-gated actions by the same person'
+  };
+
+  for (const [key, value] of Object.entries(DEFAULT_LOCAL_GOVERNMENT_SETTINGS)) {
+    await client.query(
+      `INSERT INTO system_settings (local_government_id, key, value, description)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT DO NOTHING`,
+      [localGovernmentId, key, value, descriptions[key] || null]
+    );
+  }
 };
 
 const ensurePermissions = async (client) => {
@@ -128,11 +167,13 @@ const bootstrap = async () => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const centre = await ensureOrganisation(client);
+    const { centre, localGovernment } = await ensureOrganisation(client);
     const permissionIds = await ensurePermissions(client);
     const roleIds = await ensureRoles(client, permissionIds);
     const administrator = await ensureAdministrator(client, centre.id, roleIds.get('ADMINISTRATOR'));
+    await ensureStockLocations(client, centre, localGovernment);
     await ensureSettings(client, centre.id);
+    await ensureLocalGovernmentSettings(client, localGovernment.id);
     await client.query('COMMIT');
     console.log(`Bootstrap complete for ${centre.name} (${centre.code})`);
     console.log(`Administrator: ${administrator.email}`);

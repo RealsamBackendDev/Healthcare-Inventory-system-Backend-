@@ -11,7 +11,13 @@ const getStructure = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
+const getLocalGovernment = asyncHandler(async (req, res) => {
+  const result = await service.getLocalGovernmentOverview(req.scope.localGovernmentId);
+  res.json({ success: true, data: result });
+});
+
 module.exports = {
   getActiveCentre,
-  getStructure
+  getStructure,
+  getLocalGovernment
 };

@@ -19,7 +19,8 @@ const stockSummary = `
   ),
   summary AS (
     SELECT d.id, d.code, d.name, d.generic_name, d.brand_name, d.strength, d.dosage_form, d.unit_of_measure,
-           d.minimum_stock_level, d.is_active,
+           COALESCE(fds.minimum_stock_level, 0) AS minimum_stock_level,
+           COALESCE(fds.is_active, d.is_active) AS is_active,
            COALESCE(stock.usable_quantity, 0) AS usable_quantity,
            COALESCE(stock.blocked_quantity, 0) AS blocked_quantity,
            COALESCE(stock.expired_quantity, 0) AS expired_quantity,
@@ -27,11 +28,14 @@ const stockSummary = `
            COALESCE(stock.total_quantity, 0) AS total_quantity,
            COALESCE(stock.batch_count, 0) AS batch_count,
            CASE WHEN COALESCE(stock.usable_quantity, 0) <= 0 THEN 'out_of_stock'
-                WHEN COALESCE(stock.usable_quantity, 0) <= d.minimum_stock_level THEN 'low_stock'
+                WHEN COALESCE(stock.usable_quantity, 0) <= COALESCE(fds.minimum_stock_level, 0) THEN 'low_stock'
                 ELSE 'in_stock' END AS stock_status
       FROM drugs d
+      JOIN healthcare_centres hc ON hc.id = $1
+      LEFT JOIN facility_drug_settings fds ON fds.drug_id = d.id AND fds.healthcare_centre_id = $1
       LEFT JOIN stock ON stock.drug_id = d.id
-     WHERE d.healthcare_centre_id = $1 AND d.is_active = TRUE
+     WHERE d.local_government_id = hc.local_government_id
+       AND COALESCE(fds.is_active, d.is_active) = TRUE
   )
 `;
 

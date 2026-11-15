@@ -1,5 +1,6 @@
 const asyncHandler = require('../../shared/utils/asyncHandler');
 const service = require('./requisitions.service');
+const lgService = require('../lg/lg.service');
 
 const createRequisition = asyncHandler(async (req, res) => {
   const result = await service.createRequisition({
@@ -114,6 +115,29 @@ const generateSuggestions = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: result });
 });
 
+const listIncomingDeliveries = asyncHandler(async (req, res) => {
+  const result = await lgService.listIncomingDeliveries(req.scope.healthcareCentreId);
+  res.json({ success: true, data: result });
+});
+
+const getDelivery = asyncHandler(async (req, res) => {
+  const result = await lgService.getRequisitionDelivery(
+    req.scope.healthcareCentreId,
+    req.params.requisitionId
+  );
+  res.json({ success: true, data: result });
+});
+
+const receiveDelivery = asyncHandler(async (req, res) => {
+  const result = await lgService.receiveDelivery({
+    actor: req.user,
+    scope: req.scope,
+    requisitionId: req.params.requisitionId,
+    note: req.body.note
+  });
+  res.json({ success: true, data: result });
+});
+
 module.exports = {
   createRequisition,
   listRequisitions,
@@ -127,5 +151,8 @@ module.exports = {
   closeRequisition,
   amendRequisition,
   getShortages,
-  generateSuggestions
+  generateSuggestions,
+  listIncomingDeliveries,
+  getDelivery,
+  receiveDelivery
 };

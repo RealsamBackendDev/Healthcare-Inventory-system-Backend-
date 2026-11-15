@@ -12,13 +12,20 @@ const findById = async (userId) => {
 
 const getMemberships = async (userId) => {
   const { rows } = await query(
-    `SELECT m.id, m.healthcare_centre_id, m.role_id, r.code AS role_code, r.name AS role_name,
-            hc.name AS centre_name, hc.code AS centre_code
+    `SELECT m.id, m.healthcare_centre_id, m.local_government_id, m.role_id,
+            r.code AS role_code, r.name AS role_name,
+            hc.name AS centre_name, hc.code AS centre_code,
+            lg.name AS local_government_name, lg.code AS local_government_code,
+            s.id AS state_id, s.name AS state_name, s.code AS state_code
        FROM user_memberships m
        JOIN roles r ON r.id = m.role_id
-       JOIN healthcare_centres hc ON hc.id = m.healthcare_centre_id
-      WHERE m.user_id = $1 AND m.is_active = TRUE AND hc.is_active = TRUE
-      ORDER BY hc.name`,
+       JOIN local_governments lg ON lg.id = m.local_government_id
+       JOIN states s ON s.id = lg.state_id
+       LEFT JOIN healthcare_centres hc ON hc.id = m.healthcare_centre_id AND hc.is_active = TRUE
+      WHERE m.user_id = $1
+        AND m.is_active = TRUE
+        AND (m.healthcare_centre_id IS NULL OR hc.id IS NOT NULL)
+      ORDER BY hc.name NULLS LAST, lg.name`,
     [userId]
   );
   return rows;

@@ -45,7 +45,7 @@ const listDrugs = async (healthcareCentreId, filters) => {
 const getDrug = async (healthcareCentreId, drugId) => {
   const drug = await repository.findById(healthcareCentreId, drugId);
   if (!drug) {
-    throw new NotFoundError('Drug was not found in this healthcare centre');
+    throw new NotFoundError('Drug was not found for this healthcare centre');
   }
   return mapDrug(drug);
 };
@@ -62,7 +62,7 @@ const createDrug = async ({ actor, healthcareCentreId, payload }) => {
   await ensureCodeIsAvailable(healthcareCentreId, payload.code);
 
   return withTransaction(async (client) => {
-    const drug = await repository.create(client, {
+    const created = await repository.create(client, {
       healthcareCentreId,
       code: payload.code,
       name: payload.name,
@@ -71,16 +71,28 @@ const createDrug = async ({ actor, healthcareCentreId, payload }) => {
       strength: payload.strength,
       dosageForm: payload.dosageForm,
       unitOfMeasure: payload.unitOfMeasure,
-      minimumStockLevel: payload.minimumStockLevel,
       createdBy: actor.id
     });
+
+    await repository.ensureSettingsForCatalogue(client, {
+      localGovernmentId: created.local_government_id,
+      drugId: created.id
+    });
+
+    await repository.upsertFacilitySettings(client, {
+      healthcareCentreId,
+      drugId: created.id,
+      minimumStockLevel: payload.minimumStockLevel
+    });
+
+    const drug = await repository.findById(healthcareCentreId, created.id);
 
     await recordAudit(client, {
       healthcareCentreId,
       actor,
       action: 'drug.created',
       entityType: 'drug',
-      entityId: drug.id,
+      entityId: created.id,
       summary: `Created drug ${drug.name} (${drug.code})`,
       newValues: mapDrug(drug)
     });
@@ -92,7 +104,7 @@ const createDrug = async ({ actor, healthcareCentreId, payload }) => {
 const updateDrug = async ({ actor, healthcareCentreId, drugId, payload }) => {
   const existing = await repository.findById(healthcareCentreId, drugId);
   if (!existing) {
-    throw new NotFoundError('Drug was not found in this healthcare centre');
+    throw new NotFoundError('Drug was not found for this healthcare centre');
   }
 
   if (payload.code) {
@@ -100,11 +112,21 @@ const updateDrug = async ({ actor, healthcareCentreId, drugId, payload }) => {
   }
 
   return withTransaction(async (client) => {
-    const updated = await repository.update(client, {
+    await repository.update(client, {
       healthcareCentreId,
       drugId,
       fields: payload
     });
+
+    if (payload.minimumStockLevel !== undefined) {
+      await repository.upsertFacilitySettings(client, {
+        healthcareCentreId,
+        drugId,
+        minimumStockLevel: payload.minimumStockLevel
+      });
+    }
+
+    const updated = await repository.findById(healthcareCentreId, drugId);
 
     await recordAudit(client, {
       healthcareCentreId,
@@ -124,7 +146,7 @@ const updateDrug = async ({ actor, healthcareCentreId, drugId, payload }) => {
 const setDrugActiveState = async ({ actor, healthcareCentreId, drugId, isActive }) => {
   const existing = await repository.findById(healthcareCentreId, drugId);
   if (!existing) {
-    throw new NotFoundError('Drug was not found in this healthcare centre');
+    throw new NotFoundError('Drug was not found for this healthcare centre');
   }
 
   if (isActive) {
@@ -132,7 +154,8 @@ const setDrugActiveState = async ({ actor, healthcareCentreId, drugId, isActive 
   }
 
   return withTransaction(async (client) => {
-    const updated = await repository.setActive(client, { healthcareCentreId, drugId, isActive });
+    await repository.setActive(client, { healthcareCentreId, drugId, isActive });
+    const updated = await repository.findById(healthcareCentreId, drugId);
 
     await recordAudit(client, {
       healthcareCentreId,

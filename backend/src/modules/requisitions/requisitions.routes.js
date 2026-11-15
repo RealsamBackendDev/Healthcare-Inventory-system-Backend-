@@ -5,6 +5,7 @@ const validate = require('../../middleware/validate');
 const { PERMISSIONS } = require('../../shared/constants');
 const controller = require('./requisitions.controller');
 const schemas = require('./requisitions.validation');
+const lgSchemas = require('../lg/lg.validation');
 
 const router = express.Router();
 
@@ -100,6 +101,29 @@ router.post(
   authorize(PERMISSIONS.REQUISITIONS_APPROVE),
   validate({ params: schemas.requisitionIdParamSchema, body: schemas.reviewRequisitionSchema }),
   controller.closeRequisition
+);
+
+router.get(
+  '/deliveries/incoming',
+  authenticate,
+  authorize(PERMISSIONS.DELIVERIES_RECEIVE),
+  controller.listIncomingDeliveries
+);
+
+router.get(
+  '/requisitions/:requisitionId/delivery',
+  authenticate,
+  authorize(PERMISSIONS.DELIVERIES_RECEIVE),
+  validate({ params: schemas.requisitionIdParamSchema }),
+  controller.getDelivery
+);
+
+router.post(
+  '/requisitions/:requisitionId/delivery/receive',
+  authenticate,
+  authorize(PERMISSIONS.DELIVERIES_RECEIVE),
+  validate({ params: schemas.requisitionIdParamSchema, body: lgSchemas.receiveDeliverySchema }),
+  controller.receiveDelivery
 );
 
 router.post(

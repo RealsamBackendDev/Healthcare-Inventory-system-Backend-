@@ -19,6 +19,7 @@ const requisitionsRoutes = require('./modules/requisitions/requisitions.routes')
 const expiryRoutes = require('./modules/expiry/expiry.routes');
 const reportsRoutes = require('./modules/reports/reports.routes');
 const notificationsRoutes = require('./modules/notifications/notifications.routes');
+const lgRoutes = require('./modules/lg/lg.routes');
 
 const app = express();
 
@@ -95,6 +96,7 @@ app.use('/api', requisitionsRoutes);
 app.use('/api', expiryRoutes);
 app.use('/api', reportsRoutes);
 app.use('/api', notificationsRoutes);
+app.use('/api/lg', lgRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

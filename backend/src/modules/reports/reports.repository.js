@@ -21,17 +21,24 @@ const getStockOverview = async (healthcareCentreId) => {
   const { rows } = await query(
     `WITH ${stockCte}
      SELECT
-       (SELECT count(*)::int FROM drugs WHERE healthcare_centre_id = $1 AND is_active = TRUE) AS active_drugs,
+       (SELECT count(*)::int FROM drugs d
+          JOIN healthcare_centres hc ON hc.id = $1
+         WHERE d.local_government_id = hc.local_government_id AND d.is_active = TRUE) AS active_drugs,
        COALESCE((SELECT SUM(usable_quantity) FROM stock), 0) AS usable_quantity,
        COALESCE((SELECT SUM(blocked_quantity) FROM stock), 0) AS blocked_quantity,
        COALESCE((SELECT SUM(expired_quantity) FROM stock), 0) AS expired_quantity,
-       COALESCE((SELECT count(*) FROM drugs d LEFT JOIN stock s ON s.drug_id = d.id
-                  WHERE d.healthcare_centre_id = $1 AND d.is_active = TRUE
+       COALESCE((SELECT count(*) FROM drugs d
+                  JOIN healthcare_centres hc ON hc.id = $1
+                  LEFT JOIN stock s ON s.drug_id = d.id
+                  WHERE d.local_government_id = hc.local_government_id AND d.is_active = TRUE
                     AND COALESCE(s.usable_quantity, 0) <= 0), 0)::int AS out_of_stock,
-       COALESCE((SELECT count(*) FROM drugs d LEFT JOIN stock s ON s.drug_id = d.id
-                  WHERE d.healthcare_centre_id = $1 AND d.is_active = TRUE
+       COALESCE((SELECT count(*) FROM drugs d
+                  JOIN healthcare_centres hc ON hc.id = $1
+                  LEFT JOIN facility_drug_settings fds ON fds.drug_id = d.id AND fds.healthcare_centre_id = $1
+                  LEFT JOIN stock s ON s.drug_id = d.id
+                  WHERE d.local_government_id = hc.local_government_id AND d.is_active = TRUE
                     AND COALESCE(s.usable_quantity, 0) > 0
-                    AND COALESCE(s.usable_quantity, 0) <= d.minimum_stock_level), 0)::int AS low_stock`,
+                    AND COALESCE(s.usable_quantity, 0) <= COALESCE(fds.minimum_stock_level, 0)), 0)::int AS low_stock`,
     [healthcareCentreId]
   );
   return rows[0];
@@ -91,13 +98,16 @@ const getRecentMovements = async (healthcareCentreId, limit) => {
 const getLowStockItems = async (healthcareCentreId, limit) => {
   const { rows } = await query(
     `WITH ${stockCte}
-     SELECT d.id, d.code, d.name, d.unit_of_measure, d.minimum_stock_level,
+     SELECT d.id, d.code, d.name, d.unit_of_measure,
+            COALESCE(fds.minimum_stock_level, 0) AS minimum_stock_level,
             COALESCE(s.usable_quantity, 0) AS usable_quantity
        FROM drugs d
+       JOIN healthcare_centres hc ON hc.id = $1
+       LEFT JOIN facility_drug_settings fds ON fds.drug_id = d.id AND fds.healthcare_centre_id = $1
        LEFT JOIN stock s ON s.drug_id = d.id
-      WHERE d.healthcare_centre_id = $1
+      WHERE d.local_government_id = hc.local_government_id
         AND d.is_active = TRUE
-        AND COALESCE(s.usable_quantity, 0) <= d.minimum_stock_level
+        AND COALESCE(s.usable_quantity, 0) <= COALESCE(fds.minimum_stock_level, 0)
       ORDER BY COALESCE(s.usable_quantity, 0) ASC, d.name ASC
       LIMIT $2`,
     [healthcareCentreId, limit]
@@ -144,17 +154,20 @@ const getRecentRequisitions = async (healthcareCentreId, limit) => {
 const inventoryRows = async (healthcareCentreId, { search }) => {
   const { rows } = await query(
     `WITH ${stockCte}
-     SELECT d.code, d.name, d.strength, d.dosage_form, d.unit_of_measure, d.minimum_stock_level, d.is_active,
+     SELECT d.code, d.name, d.strength, d.dosage_form, d.unit_of_measure,
+            COALESCE(fds.minimum_stock_level, 0) AS minimum_stock_level, d.is_active,
             COALESCE(s.usable_quantity, 0) AS usable_quantity,
             COALESCE(s.blocked_quantity, 0) AS blocked_quantity,
             COALESCE(s.expired_quantity, 0) AS expired_quantity,
             CASE WHEN NOT d.is_active THEN 'inactive'
                  WHEN COALESCE(s.usable_quantity, 0) <= 0 THEN 'out_of_stock'
-                 WHEN COALESCE(s.usable_quantity, 0) <= d.minimum_stock_level THEN 'low_stock'
+                 WHEN COALESCE(s.usable_quantity, 0) <= COALESCE(fds.minimum_stock_level, 0) THEN 'low_stock'
                  ELSE 'in_stock' END AS stock_status
        FROM drugs d
+       JOIN healthcare_centres hc ON hc.id = $1
+       LEFT JOIN facility_drug_settings fds ON fds.drug_id = d.id AND fds.healthcare_centre_id = $1
        LEFT JOIN stock s ON s.drug_id = d.id
-      WHERE d.healthcare_centre_id = $1
+      WHERE d.local_government_id = hc.local_government_id
         AND ($2::text IS NULL OR d.name ILIKE '%' || $2 || '%' OR d.code ILIKE '%' || $2 || '%')
       ORDER BY d.name`,
     [healthcareCentreId, search || null]
@@ -309,7 +322,11 @@ const listUsers = async (healthcareCentreId) => {
 
 const listDrugs = async (healthcareCentreId) => {
   const { rows } = await query(
-    'SELECT id, code, name FROM drugs WHERE healthcare_centre_id = $1 ORDER BY name',
+    `SELECT d.id, d.code, d.name
+       FROM drugs d
+       JOIN healthcare_centres hc ON hc.id = $1
+      WHERE d.local_government_id = hc.local_government_id
+      ORDER BY d.name`,
     [healthcareCentreId]
   );
   return rows;

@@ -1,8 +1,11 @@
 const recordAudit = async (
   client,
   {
-    healthcareCentreId,
+    healthcareCentreId = null,
+    localGovernmentId = null,
     actor,
+    actorRoleCode = null,
+    actorScopeType = null,
     action,
     entityType,
     entityId = null,
@@ -14,12 +17,16 @@ const recordAudit = async (
 ) => {
   await client.query(
     `INSERT INTO audit_events
-       (healthcare_centre_id, actor_user_id, actor_full_name, action, entity_type, entity_id, summary, previous_values, new_values, reason)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10)`,
+       (healthcare_centre_id, local_government_id, actor_user_id, actor_full_name, actor_role_code,
+        actor_scope_type, action, entity_type, entity_id, summary, previous_values, new_values, reason)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13)`,
     [
-      healthcareCentreId,
+      healthcareCentreId || null,
+      localGovernmentId || null,
       actor ? actor.id : null,
       actor ? actor.fullName : 'System',
+      actorRoleCode,
+      actorScopeType,
       action,
       entityType,
       entityId,

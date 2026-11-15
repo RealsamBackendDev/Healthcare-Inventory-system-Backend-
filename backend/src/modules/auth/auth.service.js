@@ -6,12 +6,12 @@ const { AuthenticationError, NotFoundError } = require('../../shared/errors/AppE
 const { recordAudit } = require('../../shared/utils/audit');
 const repository = require('./auth.repository');
 
-const signToken = (user, centreId) =>
+const signToken = (user, healthcareCentreId) =>
   jwt.sign(
     {
       sub: user.id,
       ver: user.token_version,
-      centreId: centreId || null
+      centreId: healthcareCentreId || null
     },
     environment.jwt.secret,
     {
@@ -20,13 +20,22 @@ const signToken = (user, centreId) =>
     }
   );
 
-const buildSession = async (user, memberships, centreId) => {
-  const membership = centreId
-    ? memberships.find((item) => item.healthcare_centre_id === centreId)
-    : memberships[0];
+const selectMembership = (memberships, healthcareCentreId) => {
+  if (healthcareCentreId) {
+    return memberships.find((item) => item.healthcare_centre_id === healthcareCentreId) || null;
+  }
+  const centreMembership = memberships.find((item) => item.healthcare_centre_id);
+  return centreMembership || memberships[0] || null;
+};
+
+const buildSession = async (user, memberships, healthcareCentreId) => {
+  const membership = selectMembership(memberships, healthcareCentreId);
 
   if (!membership) {
-    throw new AuthenticationError('You do not have access to the requested healthcare centre', 'CENTRE_ACCESS_DENIED');
+    throw new AuthenticationError(
+      'You do not have access to the requested healthcare centre',
+      'CENTRE_ACCESS_DENIED'
+    );
   }
 
   const permissions = await repository.getPermissions(membership.role_id);
@@ -44,14 +53,26 @@ const buildSession = async (user, memberships, centreId) => {
       healthcareCentreId: item.healthcare_centre_id,
       centreName: item.centre_name,
       centreCode: item.centre_code,
+      localGovernmentId: item.local_government_id,
+      localGovernmentName: item.local_government_name,
       roleCode: item.role_code,
       roleName: item.role_name
     })),
-    activeCentre: {
-      id: membership.healthcare_centre_id,
-      name: membership.centre_name,
-      code: membership.centre_code
+    activeCentre: membership.healthcare_centre_id
+      ? {
+          id: membership.healthcare_centre_id,
+          name: membership.centre_name,
+          code: membership.centre_code
+        }
+      : null,
+    activeLocalGovernment: {
+      id: membership.local_government_id,
+      name: membership.local_government_name,
+      code: membership.local_government_code,
+      stateId: membership.state_id,
+      stateName: membership.state_name
     },
+    scopeType: membership.healthcare_centre_id ? 'facility' : 'local_government',
     role: {
       code: membership.role_code,
       name: membership.role_name
@@ -88,18 +109,22 @@ const login = async ({ email, password, ipAddress }) => {
 
   const memberships = await repository.getMemberships(user.id);
   if (memberships.length === 0) {
-    throw new AuthenticationError('This account is not assigned to a healthcare centre', 'NO_MEMBERSHIP');
+    throw new AuthenticationError('This account has no active membership', 'NO_MEMBERSHIP');
   }
 
   await repository.recordSuccessfulLogin(user.id);
 
   const session = await buildSession(user, memberships);
+  const membership = selectMembership(memberships);
 
   await recordAudit(
     { query },
     {
-      healthcareCentreId: memberships[0].healthcare_centre_id,
+      healthcareCentreId: membership.healthcare_centre_id,
+      localGovernmentId: membership.local_government_id,
       actor: { id: user.id, fullName: user.full_name },
+      actorRoleCode: membership.role_code,
+      actorScopeType: membership.healthcare_centre_id ? 'facility' : 'local_government',
       action: 'auth.login',
       entityType: 'user',
       entityId: user.id,
@@ -111,21 +136,24 @@ const login = async ({ email, password, ipAddress }) => {
   return { ...session, expiresIn: environment.jwt.expiresIn };
 };
 
-const getProfile = async (userId, centreId) => {
+const getProfile = async (userId, healthcareCentreId) => {
   const user = await repository.findById(userId);
   if (!user) {
     throw new NotFoundError('User account was not found');
   }
   const memberships = await repository.getMemberships(user.id);
-  return buildSession(user, memberships, centreId);
+  return buildSession(user, memberships, healthcareCentreId);
 };
 
-const logout = async (actor, centreId) =>
+const logout = async (actor, scope) =>
   withTransaction(async (client) => {
     await repository.revokeSessions(client, actor.id);
     await recordAudit(client, {
-      healthcareCentreId: centreId,
+      healthcareCentreId: scope.healthcareCentreId,
+      localGovernmentId: scope.localGovernmentId,
       actor,
+      actorRoleCode: scope.roleCode,
+      actorScopeType: scope.scopeType,
       action: 'auth.logout',
       entityType: 'user',
       entityId: actor.id,
@@ -134,7 +162,7 @@ const logout = async (actor, centreId) =>
     return { message: 'Signed out successfully' };
   });
 
-const changePassword = async ({ actor, centreId, currentPassword, newPassword }) => {
+const changePassword = async ({ actor, scope, currentPassword, newPassword }) => {
   const user = await repository.findById(actor.id);
   if (!user) {
     throw new NotFoundError('User account was not found');
@@ -150,8 +178,11 @@ const changePassword = async ({ actor, centreId, currentPassword, newPassword })
   const updated = await withTransaction(async (client) => {
     const result = await repository.updatePassword(client, actor.id, passwordHash);
     await recordAudit(client, {
-      healthcareCentreId: centreId,
+      healthcareCentreId: scope.healthcareCentreId,
+      localGovernmentId: scope.localGovernmentId,
       actor,
+      actorRoleCode: scope.roleCode,
+      actorScopeType: scope.scopeType,
       action: 'auth.password_changed',
       entityType: 'user',
       entityId: actor.id,
@@ -162,7 +193,11 @@ const changePassword = async ({ actor, centreId, currentPassword, newPassword })
 
   const memberships = await repository.getMemberships(actor.id);
   const refreshedUser = await repository.findById(actor.id);
-  return buildSession({ ...refreshedUser, token_version: updated.token_version }, memberships, centreId);
+  return buildSession(
+    { ...refreshedUser, token_version: updated.token_version },
+    memberships,
+    scope.healthcareCentreId
+  );
 };
 
 module.exports = {

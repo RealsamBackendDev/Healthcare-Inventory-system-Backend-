@@ -69,6 +69,80 @@ const receiveDeliverySchema = z.object({
   note: z.string().trim().max(500).nullable().optional()
 });
 
+const transferIdParamSchema = z.object({
+  transferId: z.string().uuid('A valid transfer id is required')
+});
+
+const facilityStockQuerySchema = z.object({
+  facilityId: z.string().uuid('Pick a facility')
+});
+
+const createFacilityTransferSchema = z.object({
+  fromCentreId: z.string().uuid('Pick the facility sending stock'),
+  toCentreId: z.string().uuid('Pick the facility receiving stock'),
+  notes: z.string().trim().max(500).nullable().optional(),
+  items: z
+    .array(
+      z.object({
+        drugId: z.string().uuid(),
+        quantity: z.coerce.number().positive('Quantity must be greater than zero')
+      })
+    )
+    .min(1, 'Add at least one drug')
+    .max(100)
+});
+
+const listFacilityTransfersQuerySchema = z.object({
+  status: z.enum(['in_transit', 'received', 'cancelled']).optional()
+});
+
+const cancelTransferSchema = z.object({
+  reason: z.string().trim().min(3, 'A reason is required').max(500)
+});
+
+const receiveTransferSchema = z.object({
+  note: z.string().trim().max(500).nullable().optional()
+});
+
+const orderIdParamSchema = z.object({
+  orderId: z.string().uuid('A valid order id is required')
+});
+
+const createOrderSchema = z.object({
+  consolidationId: z.string().uuid('Pick a finalized consolidation'),
+  mode: z.enum(['gap', 'full']).optional(),
+  notes: z.string().trim().max(500).nullable().optional()
+});
+
+const listOrdersQuerySchema = z.object({
+  status: z.enum(['draft', 'submitted', 'fulfilled', 'cancelled']).optional()
+});
+
+const cancelOrderSchema = z.object({
+  reason: z.string().trim().min(3, 'A reason is required').max(500)
+});
+
+const fulfillOrderSchema = z.object({
+  note: z.string().trim().max(500).nullable().optional()
+});
+
+const consolidationIdParamSchema = z.object({
+  consolidationId: z.string().uuid('A valid consolidation id is required')
+});
+
+const createConsolidationSchema = z.object({
+  requisitionIds: z.array(z.string().uuid()).min(1, 'Select at least one request').max(100),
+  notes: z.string().trim().max(500).nullable().optional()
+});
+
+const previewConsolidationSchema = z.object({
+  requisitionIds: z.array(z.string().uuid()).min(1, 'Select at least one request').max(100)
+});
+
+const listConsolidationsQuerySchema = z.object({
+  status: z.enum(['draft', 'finalized', 'cancelled']).optional()
+});
+
 const approvalIdParamSchema = z.object({
   approvalId: z.string().uuid('A valid approval id is required')
 });
@@ -104,6 +178,21 @@ module.exports = {
   listLimitQuerySchema,
   receiveDeliverySchema,
   reportQuerySchema,
+  transferIdParamSchema,
+  facilityStockQuerySchema,
+  createFacilityTransferSchema,
+  listFacilityTransfersQuerySchema,
+  cancelTransferSchema,
+  receiveTransferSchema,
+  orderIdParamSchema,
+  createOrderSchema,
+  listOrdersQuerySchema,
+  cancelOrderSchema,
+  fulfillOrderSchema,
+  consolidationIdParamSchema,
+  createConsolidationSchema,
+  previewConsolidationSchema,
+  listConsolidationsQuerySchema,
   approvalIdParamSchema,
   listApprovalsQuerySchema,
   approveThresholdSchema,

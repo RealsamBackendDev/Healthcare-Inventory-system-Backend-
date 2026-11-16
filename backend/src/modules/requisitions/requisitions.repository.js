@@ -110,8 +110,8 @@ const listEvents = async (requisitionId) => {
 const insertRequisition = async (client, requisition) => {
   const { rows } = await client.query(
     `INSERT INTO requisitions
-       (healthcare_centre_id, requisition_number, status, source, notes, created_by, created_by_name, parent_requisition_id)
-     VALUES ($1, $2, 'draft', $3, $4, $5, $6, $7)
+       (healthcare_centre_id, local_government_id, requisition_number, status, source, notes, created_by, created_by_name, parent_requisition_id)
+     VALUES ($1, (SELECT local_government_id FROM healthcare_centres WHERE id = $1), $2, 'draft', $3, $4, $5, $6, $7)
      RETURNING *`,
     [
       requisition.healthcareCentreId,

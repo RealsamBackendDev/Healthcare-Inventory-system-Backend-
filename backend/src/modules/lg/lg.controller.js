@@ -44,7 +44,8 @@ const approveRequisition = asyncHandler(async (req, res) => {
     scope: req.scope,
     requisitionId: req.params.requisitionId,
     decision: 'approved',
-    comment: req.body.comment
+    comment: req.body.comment,
+    items: req.body.items
   });
   res.json({ success: true, data: result });
 });

@@ -1,6 +1,7 @@
 const asyncHandler = require('../../shared/utils/asyncHandler');
 const service = require('./requisitions.service');
 const lgService = require('../lg/lg.service');
+const receipts = require('../lg/lg.receipts');
 
 const createRequisition = asyncHandler(async (req, res) => {
   const result = await service.createRequisition({
@@ -129,11 +130,32 @@ const getDelivery = asyncHandler(async (req, res) => {
 });
 
 const receiveDelivery = asyncHandler(async (req, res) => {
-  const result = await lgService.receiveDelivery({
+  const result = await receipts.receiveDelivery({
     actor: req.user,
     scope: req.scope,
     requisitionId: req.params.requisitionId,
-    note: req.body.note
+    dispatchId: req.body.dispatchId,
+    note: req.body.note,
+    items: req.body.items
+  });
+  res.json({ success: true, data: result });
+});
+
+const getDispatchDelivery = asyncHandler(async (req, res) => {
+  const result = await receipts.getDispatchDelivery(
+    req.scope.healthcareCentreId,
+    req.params.dispatchId
+  );
+  res.json({ success: true, data: result });
+});
+
+const receiveDispatchDelivery = asyncHandler(async (req, res) => {
+  const result = await receipts.receiveDelivery({
+    actor: req.user,
+    scope: req.scope,
+    dispatchId: req.params.dispatchId,
+    note: req.body.note,
+    items: req.body.items
   });
   res.json({ success: true, data: result });
 });
@@ -154,5 +176,7 @@ module.exports = {
   generateSuggestions,
   listIncomingDeliveries,
   getDelivery,
-  receiveDelivery
+  receiveDelivery,
+  getDispatchDelivery,
+  receiveDispatchDelivery
 };

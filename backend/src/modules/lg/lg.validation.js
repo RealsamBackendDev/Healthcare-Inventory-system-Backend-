@@ -39,7 +39,16 @@ const dispatchIdParamSchema = z.object({
 });
 
 const approveRequisitionSchema = z.object({
-  comment: z.string().trim().max(500).nullable().optional()
+  comment: z.string().trim().max(500).nullable().optional(),
+  items: z
+    .array(
+      z.object({
+        drugId: z.string().uuid('A valid drug id is required'),
+        approvedQuantity: z.coerce.number().min(0).max(1000000000)
+      })
+    )
+    .max(200)
+    .optional()
 });
 
 const rejectRequisitionSchema = z.object({
@@ -66,7 +75,20 @@ const listLimitQuerySchema = z.object({
 });
 
 const receiveDeliverySchema = z.object({
-  note: z.string().trim().max(500).nullable().optional()
+  note: z.string().trim().max(500).nullable().optional(),
+  dispatchId: z.string().uuid().optional(),
+  items: z
+    .array(
+      z.object({
+        dispatchItemId: z.string().uuid('A valid dispatch line is required'),
+        acceptedQuantity: z.coerce.number().min(0).max(1000000000),
+        damagedQuantity: z.coerce.number().min(0).max(1000000000).optional(),
+        missingQuantity: z.coerce.number().min(0).max(1000000000).optional(),
+        reason: z.string().trim().max(500).nullable().optional()
+      })
+    )
+    .max(200)
+    .optional()
 });
 
 const transferIdParamSchema = z.object({

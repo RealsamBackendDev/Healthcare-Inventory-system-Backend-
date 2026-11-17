@@ -111,6 +111,22 @@ router.get(
 );
 
 router.get(
+  '/deliveries/:dispatchId',
+  authenticate,
+  authorize(PERMISSIONS.DELIVERIES_RECEIVE),
+  validate({ params: lgSchemas.dispatchIdParamSchema }),
+  controller.getDispatchDelivery
+);
+
+router.post(
+  '/deliveries/:dispatchId/receive',
+  authenticate,
+  authorize(PERMISSIONS.DELIVERIES_RECEIVE),
+  validate({ params: lgSchemas.dispatchIdParamSchema, body: lgSchemas.receiveDeliverySchema }),
+  controller.receiveDispatchDelivery
+);
+
+router.get(
   '/requisitions/:requisitionId/delivery',
   authenticate,
   authorize(PERMISSIONS.DELIVERIES_RECEIVE),

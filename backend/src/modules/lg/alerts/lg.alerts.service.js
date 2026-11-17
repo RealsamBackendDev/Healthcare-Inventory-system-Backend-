@@ -36,13 +36,12 @@ const formatAlertDate = (value) => {
 const getAlerts = async ({ scope }) => {
   const localGovernmentId = requireLocalGovernmentScope(scope);
 
-  const [counts, lowStock, expiring, requisitions, approvals, orders, consolidations] =
+  const [counts, lowStock, expiring, requisitions, orders, consolidations] =
     await Promise.all([
       repository.alertCounts(localGovernmentId, NEAR_EXPIRY_WINDOW_DAYS),
       repository.alertLowStock(localGovernmentId, ALERT_LIMITS.lowStock),
       repository.alertNearExpiry(localGovernmentId, NEAR_EXPIRY_WINDOW_DAYS, ALERT_LIMITS.expiring),
       repository.alertPendingRequisitions(localGovernmentId, ALERT_LIMITS.requisitions),
-      repository.alertPendingApprovals(localGovernmentId, ALERT_LIMITS.approvals),
       repository.alertOpenOrders(localGovernmentId, ALERT_LIMITS.orders),
       repository.alertDraftConsolidations(localGovernmentId, ALERT_LIMITS.consolidations)
     ]);
@@ -73,17 +72,6 @@ const getAlerts = async ({ scope }) => {
       title: `${row.drug_name} is below minimum at ${row.centre_name}`,
       detail: `${formatAlertAmount(row.quantity)} of ${formatAlertAmount(row.minimum_stock_level)} ${row.unit_of_measure || 'units'} · short by ${formatAlertAmount(shortfall)}`,
       link: '/lg/requests'
-    });
-  });
-
-  approvals.forEach((row) => {
-    alerts.push({
-      id: `approval:${row.id}`,
-      type: 'pending_approval',
-      severity: 'warning',
-      title: `Approval needed for a warehouse ${row.approval_type}`,
-      detail: `${row.summary || 'Threshold action'} · raised by ${row.requested_by_name} · ${formatAlertDate(row.requested_at)}`,
-      link: '/lg/approvals'
     });
   });
 
@@ -127,7 +115,6 @@ const getAlerts = async ({ scope }) => {
       lowStock: counts.low_stock,
       expiring: counts.expiring,
       requisitions: counts.requisitions,
-      approvals: counts.approvals,
       orders: counts.orders,
       consolidations: counts.consolidations,
       shown: alerts.length

@@ -15,6 +15,7 @@ const createReceiptSchema = z.object({
   supplier: z.string().trim().max(160).nullable().optional(),
   receivedDate: z.string().trim().max(40).nullable().optional(),
   note: z.string().trim().max(500).nullable().optional(),
+  clientRequestId: z.string().trim().min(8).max(80).optional(),
   items: z.array(receiptItemSchema).min(1, 'Add at least one item').max(200)
 });
 

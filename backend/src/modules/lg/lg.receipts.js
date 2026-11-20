@@ -2,7 +2,8 @@ const { withTransaction } = require('../../database/connection');
 const { ForbiddenError, NotFoundError, ConflictError, ValidationError } = require('../../shared/errors/AppError');
 const { roundQuantity } = require('../../shared/utils/numbers');
 const { recordAudit } = require('../../shared/utils/audit');
-const { QUANTITY_EPSILON } = require('../../shared/constants');
+const { QUANTITY_EPSILON, NOTIFICATION_TYPES } = require('../../shared/constants');
+const { notifyLocalGovernmentMembers } = require('../../shared/utils/notifications');
 const repository = require('./lg.repository');
 
 const mapDispatchItem = (row) => ({
@@ -27,6 +28,9 @@ const mapDispatchItem = (row) => ({
     )
   ),
   discrepancyReason: row.discrepancy_reason || null,
+  discrepancyStatus: row.discrepancy_status || 'none',
+  discrepancyResolution: row.discrepancy_resolution || null,
+  discrepancyNote: row.discrepancy_note || null,
   unitCost: row.unit_cost === null || row.unit_cost === undefined ? null : Number(row.unit_cost)
 });
 
@@ -124,27 +128,47 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
 
     for (const item of dispatchItems) {
       const dispatched = roundQuantity(Number(item.quantity));
+      const alreadyRecorded = roundQuantity(
+        Number(item.accepted_quantity || 0) +
+          Number(item.damaged_quantity || 0) +
+          Number(item.missing_quantity || 0)
+      );
+      const outstanding = roundQuantity(Math.max(0, dispatched - alreadyRecorded));
       const entry = supplied ? supplied.get(item.id) : null;
-      if (supplied && !entry) {
-        throw new ValidationError('Confirm every line of the delivery', [
-          { field: 'items', message: 'Every dispatched batch needs an accepted quantity' }
-        ]);
-      }
-      const accepted = supplied ? roundQuantity(Number(entry.acceptedQuantity || 0)) : dispatched;
-      const damaged = supplied ? roundQuantity(Number(entry.damagedQuantity || 0)) : 0;
-      const missing = supplied ? roundQuantity(Number(entry.missingQuantity || 0)) : 0;
+      const accepted = supplied
+        ? roundQuantity(Number((entry && entry.acceptedQuantity) || 0))
+        : outstanding;
+      const damaged = supplied ? roundQuantity(Number((entry && entry.damagedQuantity) || 0)) : 0;
+      const missing = supplied ? roundQuantity(Number((entry && entry.missingQuantity) || 0)) : 0;
+      const counted = roundQuantity(accepted + damaged + missing);
 
-      if (Math.abs(accepted + damaged + missing - dispatched) > 0.0005) {
+      if (counted > outstanding + 0.0005) {
         throw new ValidationError(
-          `Accepted, damaged and missing must add up to the ${dispatched} dispatched of ${item.drug_name}`,
-          [{ field: 'items', message: 'The three quantities must equal what was dispatched' }]
+          `Only ${outstanding} of ${item.drug_name} is still on the way for this delivery`,
+          [{ field: 'items', message: 'A receipt cannot exceed what is still outstanding' }]
         );
       }
 
-      lines.push({ item, accepted, damaged, missing, reason: entry ? entry.reason || null : null });
+      if (counted <= 0) {
+        continue;
+      }
+
+      lines.push({
+        item,
+        accepted,
+        damaged,
+        missing,
+        reason: entry ? entry.reason || null : null
+      });
       totalAccepted += accepted;
       totalDamaged += damaged;
       totalMissing += missing;
+    }
+
+    if (lines.length === 0) {
+      throw new ValidationError('Enter the quantity that arrived in this delivery', [
+        { field: 'items', message: 'At least one batch needs a quantity' }
+      ]);
     }
 
     for (const line of lines) {
@@ -176,6 +200,26 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
           sourceReference: dispatch.dispatch_number,
           requisitionId: dispatch.requisition_id
         });
+
+        if (line.item.transit_batch_id) {
+          const released = await repository.releaseTransitQuantity(client, {
+            transitBatchId: line.item.transit_batch_id,
+            drugId: line.item.drug_id,
+            quantity: line.accepted,
+            movementType: 'transit_out',
+            reason: `Accepted from ${dispatch.dispatch_number} at the facility`,
+            actorId: actor.id,
+            actorName: actor.fullName,
+            sourceReference: dispatch.dispatch_number,
+            requisitionId: dispatch.requisition_id
+          });
+          if (!released) {
+            throw new ConflictError(
+              'Transit stock does not match this delivery, please refresh and try again',
+              'TRANSIT_STOCK_MISMATCH'
+            );
+          }
+        }
       }
 
       await repository.updateDispatchItemReceipt(client, {
@@ -185,12 +229,83 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
         missingQuantity: line.missing,
         reason: line.reason
       });
+
+      if (line.missing + line.damaged > 0) {
+        await repository.openDispatchItemDiscrepancy(client, line.item.id);
+      }
+
+      if (line.damaged > 0) {
+        const quarantine = await repository.insertQuarantineBatch(client, {
+          healthcareCentreId,
+          localGovernmentId: location.local_government_id,
+          stockLocationId: location.id,
+          drugId: line.item.drug_id,
+          batchNumber: `${line.item.batch_number}-Q`,
+          expiryDate: line.item.expiry_date,
+          quantity: line.damaged,
+          unitCost: line.item.unit_cost,
+          supplierReference: dispatch.dispatch_number
+        });
+
+        await repository.insertTransferMovement(client, {
+          healthcareCentreId,
+          drugId: line.item.drug_id,
+          batchId: quarantine.id,
+          quantity: line.damaged,
+          reason: `Damaged in transit from the LG warehouse (${dispatch.dispatch_number}), held in quarantine`,
+          actorId: actor.id,
+          actorName: actor.fullName,
+          sourceReference: dispatch.dispatch_number,
+          requisitionId: dispatch.requisition_id
+        });
+
+        if (line.item.transit_batch_id) {
+          const released = await repository.releaseTransitQuantity(client, {
+            transitBatchId: line.item.transit_batch_id,
+            drugId: line.item.drug_id,
+            quantity: line.damaged,
+            movementType: 'transit_out',
+            reason: `Damaged on ${dispatch.dispatch_number}, moved to quarantine`,
+            actorId: actor.id,
+            actorName: actor.fullName,
+            sourceReference: dispatch.dispatch_number,
+            requisitionId: dispatch.requisition_id
+          });
+          if (!released) {
+            throw new ConflictError(
+              'Transit stock does not match this delivery, please refresh and try again',
+              'TRANSIT_STOCK_MISMATCH'
+            );
+          }
+        }
+      }
     }
 
-    const fullyAccepted = lines.every(
-      (line) => Math.abs(line.accepted - Number(line.item.quantity)) < 0.0005
+    const updatedItems = await repository.listDispatchItems(dispatch.id);
+    const remainingQuantity = roundQuantity(
+      updatedItems.reduce(
+        (sum, item) =>
+          sum +
+          Math.max(
+            0,
+            Number(item.quantity) -
+              Number(item.accepted_quantity || 0) -
+              Number(item.damaged_quantity || 0) -
+              Number(item.missing_quantity || 0)
+          ),
+        0
+      )
     );
-    const status = fullyAccepted ? 'received' : 'partially_received';
+    const cumulativeAccepted = roundQuantity(
+      updatedItems.reduce((sum, item) => sum + Number(item.accepted_quantity || 0), 0)
+    );
+    const cumulativeDamaged = roundQuantity(
+      updatedItems.reduce((sum, item) => sum + Number(item.damaged_quantity || 0), 0)
+    );
+    const cumulativeMissing = roundQuantity(
+      updatedItems.reduce((sum, item) => sum + Number(item.missing_quantity || 0), 0)
+    );
+    const status = remainingQuantity > 0.0005 ? 'partially_received' : 'received';
 
     await repository.insertDispatchReceipt(client, {
       localGovernmentId: location.local_government_id,
@@ -199,7 +314,10 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       requisitionId: dispatch.requisition_id,
       note,
       actorId: actor.id,
-      actorName: actor.fullName
+      actorName: actor.fullName,
+      acceptedQuantity: roundQuantity(totalAccepted),
+      damagedQuantity: roundQuantity(totalDamaged),
+      missingQuantity: roundQuantity(totalMissing)
     });
 
     await repository.markDispatchAccounted(client, {
@@ -208,17 +326,18 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       actorId: actor.id,
       actorName: actor.fullName,
       note,
-      acceptedQuantity: roundQuantity(totalAccepted),
-      damagedQuantity: roundQuantity(totalDamaged),
-      missingQuantity: roundQuantity(totalMissing)
+      acceptedQuantity: cumulativeAccepted,
+      damagedQuantity: cumulativeDamaged,
+      missingQuantity: cumulativeMissing
     });
 
     const requisitionItems = await repository.listRequisitionItems(dispatch.requisition_id);
     const settled = requisitionItems.every(
       (item) =>
-        Number(item.accepted_quantity) + Number(item.damaged_quantity) >=
-        Number(item.approved_quantity) - QUANTITY_EPSILON
+        Number(item.accepted_quantity) + Number(item.closed_short_quantity || 0) >= Number(item.approved_quantity) - QUANTITY_EPSILON
     );
+    const discrepanciesOpened = lines.filter((line) => line.missing + line.damaged > 0).length;
+    const damagedQuarantined = roundQuantity(totalDamaged);
 
     if (settled) {
       await repository.markRequisitionReceived(client, {
@@ -254,9 +373,32 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
         acceptedQuantity: roundQuantity(totalAccepted),
         damagedQuantity: roundQuantity(totalDamaged),
         missingQuantity: roundQuantity(totalMissing),
+        remainingQuantity,
         status
       }
     });
+
+    await notifyLocalGovernmentMembers(client, {
+      localGovernmentId: location.local_government_id,
+      excludeUserId: actor.id,
+      type: NOTIFICATION_TYPES.DELIVERY_RECEIVED,
+      title: 'Delivery confirmed',
+      message: `${dispatch.dispatch_number} to ${scope.centreName || 'the facility'} was confirmed (${roundQuantity(totalAccepted)} accepted, ${roundQuantity(totalDamaged)} damaged, ${roundQuantity(totalMissing)} missing)`,
+      entityType: 'lg_dispatch',
+      entityId: dispatch.id
+    });
+
+    if (discrepanciesOpened > 0) {
+      await notifyLocalGovernmentMembers(client, {
+        localGovernmentId: location.local_government_id,
+        excludeUserId: actor.id,
+        type: NOTIFICATION_TYPES.DISCREPANCY_OPENED,
+        title: 'Discrepancy needs action',
+        message: `${dispatch.dispatch_number} to ${scope.centreName || 'the facility'} has ${discrepanciesOpened} line(s) with damage or shortage to resolve`,
+        entityType: 'lg_dispatch',
+        entityId: dispatch.id
+      });
+    }
 
     return {
       dispatchId: dispatch.id,
@@ -265,6 +407,9 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       acceptedQuantity: roundQuantity(totalAccepted),
       damagedQuantity: roundQuantity(totalDamaged),
       missingQuantity: roundQuantity(totalMissing),
+      remainingQuantity,
+      discrepanciesOpened,
+      damagedQuarantined,
       requisitionClosed: settled
     };
   });

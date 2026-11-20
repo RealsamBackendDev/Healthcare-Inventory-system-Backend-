@@ -3,7 +3,12 @@ const environment = require('../config/environment');
 const { query } = require('../database/connection');
 const { AuthenticationError, ForbiddenError } = require('../shared/errors/AppError');
 
-const LOCAL_GOVERNMENT_PATHS = ['/api/lg', '/api/auth', '/api/organisations/lg'];
+const LOCAL_GOVERNMENT_PATHS = [
+  '/api/lg',
+  '/api/auth',
+  '/api/organisations/lg',
+  '/api/notifications'
+];
 
 const loadMemberships = async (userId) => {
   const { rows } = await query(

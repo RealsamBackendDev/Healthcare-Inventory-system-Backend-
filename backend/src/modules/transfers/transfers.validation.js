@@ -35,7 +35,31 @@ const declineSchema = z.object({
 });
 
 const receiveSchema = z.object({
-  note: z.string().trim().max(500).nullable().optional()
+  note: z.string().trim().max(500).nullable().optional(),
+  items: z
+    .array(
+      z.object({
+        transferItemId: z.string().uuid('A valid transfer line is required'),
+        acceptedQuantity: z.coerce.number().min(0).max(1000000000).optional(),
+        damagedQuantity: z.coerce.number().min(0).max(1000000000).optional(),
+        missingQuantity: z.coerce.number().min(0).max(1000000000).optional(),
+        reason: z.string().trim().max(500).nullable().optional()
+      })
+    )
+    .max(500)
+    .optional()
+});
+
+const shortageParamSchema = z.object({
+  requestId: z.string().uuid('A valid request id is required'),
+  lineId: z.string().uuid('A valid shortage id is required')
+});
+
+const resolveShortageSchema = z.object({
+  resolution: z.enum(['reissue', 'written_off'], {
+    errorMap: () => ({ message: 'Choose whether the stock will be replaced or written off' })
+  }),
+  note: z.string().trim().min(3, 'Explain the decision in a few words').max(500)
 });
 
 const cancelSchema = z.object({
@@ -50,5 +74,7 @@ module.exports = {
   decisionSchema,
   declineSchema,
   receiveSchema,
+  shortageParamSchema,
+  resolveShortageSchema,
   cancelSchema
 };

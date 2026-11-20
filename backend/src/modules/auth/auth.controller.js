@@ -15,6 +15,14 @@ const me = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
+const switchMembership = asyncHandler(async (req, res) => {
+  const result = await service.switchMembership({
+    actor: req.user,
+    membershipId: req.body.membershipId
+  });
+  res.json({ success: true, data: result });
+});
+
 const logout = asyncHandler(async (req, res) => {
   const result = await service.logout(req.user, req.scope);
   res.json({ success: true, data: result });
@@ -33,6 +41,7 @@ const changePassword = asyncHandler(async (req, res) => {
 module.exports = {
   login,
   me,
+  switchMembership,
   logout,
   changePassword
 };

@@ -39,7 +39,7 @@ const normaliseReceiptItems = (items) =>
     };
   });
 
-const applyItem = async (client, { actor, healthcareCentreId, item, drug, receipt, movementType }) => {
+const applyItem = async (client, { actor, healthcareCentreId, location, item, drug, receipt, movementType }) => {
   const today = todayIsoDate();
   const existing = await repository.findBatchForUpdate(client, {
     healthcareCentreId,
@@ -86,6 +86,8 @@ const applyItem = async (client, { actor, healthcareCentreId, item, drug, receip
   } else {
     batch = await repository.insertBatch(client, {
       healthcareCentreId,
+      localGovernmentId: location.local_government_id,
+      stockLocationId: location.id,
       drugId: item.drugId,
       batchNumber: item.batchNumber,
       expiryDate: item.expiryDate,
@@ -141,6 +143,13 @@ const createReceipt = async ({
   supplier,
   note
 }) => {
+  if (payload.clientRequestId) {
+    const existing = await repository.findReceiptByKey(healthcareCentreId, payload.clientRequestId);
+    if (existing) {
+      return getReceipt(healthcareCentreId, existing.id);
+    }
+  }
+
   const items = normaliseReceiptItems(payload.items);
   const receivedDate = parseDateInput(payload.receivedDate);
 
@@ -160,6 +169,11 @@ const createReceipt = async ({
     }
     duplicateKeys.add(key);
   });
+
+  const location = await repository.findFacilityLocation(null, healthcareCentreId);
+  if (!location) {
+    throw new NotFoundError('This healthcare centre has no active store location');
+  }
 
   return withTransaction(async (client) => {
     const drugs = await repository.findActiveDrugs(
@@ -189,7 +203,8 @@ const createReceipt = async ({
       totalItems: items.length,
       note: note !== undefined ? note : payload.note,
       actorId: actor.id,
-      actorName: actor.fullName
+      actorName: actor.fullName,
+      idempotencyKey: payload.clientRequestId || null
     });
 
     const appliedItems = [];
@@ -198,6 +213,7 @@ const createReceipt = async ({
         await applyItem(client, {
           actor,
           healthcareCentreId,
+          location,
           item,
           drug: drugsById.get(item.drugId),
           receipt,

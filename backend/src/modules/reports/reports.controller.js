@@ -25,6 +25,7 @@ module.exports = {
   getDashboard,
   getOptions,
   inventory: send(service.buildInventoryReport),
+  stockPosition: send(service.buildStockPositionReport),
   stockMovements: send(service.buildMovementReport),
   dispensing: send(service.buildDispensingReport),
   expiry: send(service.buildExpiryReport),

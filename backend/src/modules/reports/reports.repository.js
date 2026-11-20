@@ -175,6 +175,96 @@ const inventoryRows = async (healthcareCentreId, { search }) => {
   return rows;
 };
 
+const stockPositionRows = async (healthcareCentreId, { search }) => {
+  const { rows } = await query(
+    `WITH facility_stock AS (
+       SELECT b.drug_id,
+              SUM(CASE WHEN b.status = 'usable' AND (b.expiry_date IS NULL OR b.expiry_date >= CURRENT_DATE)
+                       THEN b.quantity ELSE 0 END) AS on_hand_quantity,
+              SUM(CASE WHEN b.status = 'expired'
+                            OR (b.status = 'usable' AND b.expiry_date < CURRENT_DATE)
+                       THEN b.quantity ELSE 0 END) AS expired_quantity
+         FROM batches b
+        WHERE b.healthcare_centre_id = $1
+        GROUP BY b.drug_id
+     ),
+     dispatch_supply AS (
+       SELECT di.drug_id,
+              SUM(CASE WHEN d.status IN ('dispatched', 'partially_received')
+                       THEN GREATEST(di.quantity - di.accepted_quantity - di.damaged_quantity - di.missing_quantity, 0)
+                       ELSE 0 END) AS in_transit_quantity,
+              SUM(CASE WHEN di.discrepancy_status = 'open'
+                       THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS discrepancy_quantity
+         FROM lg_dispatch_items di
+         JOIN lg_dispatches d ON d.id = di.dispatch_id
+        WHERE d.healthcare_centre_id = $1
+          AND d.status <> 'cancelled'
+        GROUP BY di.drug_id
+     ),
+     transfer_supply AS (
+       SELECT ti.drug_id,
+              SUM(CASE WHEN t.status IN ('in_transit', 'partially_received')
+                       THEN GREATEST(ti.quantity - ti.accepted_quantity - ti.damaged_quantity - ti.missing_quantity, 0)
+                       ELSE 0 END) AS in_transit_quantity,
+              SUM(CASE WHEN ti.discrepancy_status = 'open'
+                       THEN ti.missing_quantity + ti.damaged_quantity ELSE 0 END) AS discrepancy_quantity
+         FROM facility_transfer_items ti
+         JOIN facility_transfers t ON t.id = ti.transfer_id
+        WHERE t.to_healthcare_centre_id = $1
+          AND t.status <> 'cancelled'
+        GROUP BY ti.drug_id
+     ),
+     open_requisitions AS (
+       SELECT id
+         FROM requisitions
+        WHERE healthcare_centre_id = $1
+          AND status IN ('pending_approval', 'approved')
+     ),
+     fulfilment AS (
+       SELECT ri.drug_id,
+              SUM(ri.requested_quantity) AS requested_quantity,
+              SUM(ri.approved_quantity) AS approved_quantity,
+              SUM(ri.closed_short_quantity) AS closed_short_quantity
+         FROM requisition_items ri
+         JOIN open_requisitions r ON r.id = ri.requisition_id
+        GROUP BY ri.drug_id
+     ),
+     requisition_supply AS (
+       SELECT di.drug_id,
+              SUM(di.quantity) AS dispatched_quantity,
+              SUM(di.accepted_quantity) AS received_quantity
+         FROM lg_dispatch_items di
+         JOIN lg_dispatches d ON d.id = di.dispatch_id
+        WHERE d.requisition_id IN (SELECT id FROM open_requisitions)
+          AND d.status <> 'cancelled'
+        GROUP BY di.drug_id
+     )
+     SELECT d.code, d.name, d.unit_of_measure,
+            COALESCE(fs.on_hand_quantity, 0) AS on_hand_quantity,
+            COALESCE(ds.in_transit_quantity, 0) + COALESCE(ts.in_transit_quantity, 0) AS in_transit_quantity,
+            COALESCE(ds.discrepancy_quantity, 0) + COALESCE(ts.discrepancy_quantity, 0) AS discrepancy_quantity,
+            COALESCE(fs.expired_quantity, 0) AS expired_quantity,
+            COALESCE(f.requested_quantity, 0) AS requested_quantity,
+            COALESCE(f.approved_quantity, 0) AS approved_quantity,
+            COALESCE(rs.dispatched_quantity, 0) AS dispatched_quantity,
+            COALESCE(rs.received_quantity, 0) AS received_quantity,
+            COALESCE(f.closed_short_quantity, 0) AS closed_short_quantity
+       FROM drugs d
+       JOIN healthcare_centres hc ON hc.id = $1
+       LEFT JOIN facility_stock fs ON fs.drug_id = d.id
+       LEFT JOIN dispatch_supply ds ON ds.drug_id = d.id
+       LEFT JOIN transfer_supply ts ON ts.drug_id = d.id
+       LEFT JOIN fulfilment f ON f.drug_id = d.id
+       LEFT JOIN requisition_supply rs ON rs.drug_id = d.id
+      WHERE d.local_government_id = hc.local_government_id
+        AND d.is_active = TRUE
+        AND ($2::text IS NULL OR d.name ILIKE '%' || $2 || '%' OR d.code ILIKE '%' || $2 || '%')
+      ORDER BY d.name`,
+    [healthcareCentreId, search || null]
+  );
+  return rows;
+};
+
 const movementRows = async (healthcareCentreId, { from, to, drugId, movementType, userId }) => {
   const { rows } = await query(
     `SELECT sm.created_at, sm.movement_type, sm.quantity, sm.reason, sm.source_reference, sm.actor_full_name,
@@ -341,6 +431,7 @@ module.exports = {
   getUpcomingExpiries,
   getRecentRequisitions,
   inventoryRows,
+  stockPositionRows,
   movementRows,
   dispensingRows,
   expiryRows,

@@ -72,6 +72,17 @@ router.post(
 );
 
 router.post(
+  '/transfers/requests/:requestId/shortages/:lineId/resolve',
+  authenticate,
+  authorize(PERMISSIONS.STOCK_RECEIVE),
+  validate({
+    params: schemas.shortageParamSchema,
+    body: schemas.resolveShortageSchema
+  }),
+  controller.resolveShortage
+);
+
+router.post(
   '/transfers/requests/:requestId/cancel',
   authenticate,
   authorize(PERMISSIONS.REQUISITIONS_CREATE),

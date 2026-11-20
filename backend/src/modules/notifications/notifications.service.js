@@ -13,7 +13,12 @@ const mapNotification = (row) => ({
   createdAt: row.created_at
 });
 
-const listNotifications = async (healthcareCentreId, userId, filters) => {
+const scopeOf = (scope) => ({
+  healthcareCentreId: scope.healthcareCentreId || null,
+  localGovernmentId: scope.localGovernmentId || null
+});
+
+const listNotifications = async (scope, userId, filters) => {
   const { page, pageSize, offset, limit } = getPagination(filters);
   let isRead;
   if (filters.isRead === 'unread') {
@@ -23,7 +28,7 @@ const listNotifications = async (healthcareCentreId, userId, filters) => {
   }
 
   const { rows, total } = await repository.listForUser({
-    healthcareCentreId,
+    ...scopeOf(scope),
     userId,
     isRead,
     limit,
@@ -36,20 +41,24 @@ const listNotifications = async (healthcareCentreId, userId, filters) => {
   };
 };
 
-const getUnreadCount = async (healthcareCentreId, userId) => ({
-  unread: await repository.countUnread(healthcareCentreId, userId)
+const getUnreadCount = async (scope, userId) => ({
+  unread: await repository.countUnread({ ...scopeOf(scope), userId })
 });
 
-const markRead = async (healthcareCentreId, userId, notificationId) => {
-  const updated = await repository.markRead(healthcareCentreId, userId, notificationId);
+const markRead = async (scope, userId, notificationId) => {
+  const updated = await repository.markRead({
+    ...scopeOf(scope),
+    userId,
+    notificationId
+  });
   if (!updated) {
     throw new NotFoundError('Notification was not found');
   }
   return { id: updated.id, isRead: updated.is_read };
 };
 
-const markAllRead = async (healthcareCentreId, userId) => {
-  const updated = await repository.markAllRead(healthcareCentreId, userId);
+const markAllRead = async (scope, userId) => {
+  const updated = await repository.markAllRead({ ...scopeOf(scope), userId });
   return { updated };
 };
 

@@ -226,6 +226,10 @@ const NOTIFICATION_TYPES = {
   EXPIRED_STOCK: 'expired_stock',
   LOW_STOCK: 'low_stock',
   REQUISITION_PENDING: 'requisition_pending',
+  REQUISITION_REVIEWED: 'requisition_reviewed',
+  DISPATCH_POSTED: 'dispatch_posted',
+  DELIVERY_RECEIVED: 'delivery_received',
+  DISCREPANCY_OPENED: 'discrepancy_opened',
   ADJUSTMENT_PENDING: 'adjustment_pending',
   RETURN_PENDING: 'return_pending'
 };

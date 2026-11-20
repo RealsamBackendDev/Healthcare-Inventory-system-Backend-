@@ -64,6 +64,19 @@ const receiveRequest = asyncHandler(async (req, res) => {
     actor: req.user,
     scope: req.scope,
     requestId: req.params.requestId,
+    note: req.body.note,
+    items: req.body.items
+  });
+  res.json({ success: true, data: result });
+});
+
+const resolveShortage = asyncHandler(async (req, res) => {
+  const result = await service.resolveShortage({
+    actor: req.user,
+    scope: req.scope,
+    requestId: req.params.requestId,
+    lineId: req.params.lineId,
+    resolution: req.body.resolution,
     note: req.body.note
   });
   res.json({ success: true, data: result });
@@ -88,5 +101,6 @@ module.exports = {
   approveRequest,
   declineRequest,
   receiveRequest,
+  resolveShortage,
   cancelRequest
 };

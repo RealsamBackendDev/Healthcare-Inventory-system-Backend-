@@ -25,6 +25,22 @@ router.get(
 );
 
 router.get(
+  '/warehouse/movements',
+  authenticate,
+  authorize(PERMISSIONS.INVENTORY_VIEW),
+  validate({ query: schemas.warehouseMovementsQuerySchema }),
+  controller.listWarehouseMovements
+);
+
+router.get(
+  '/ledger/reconciliation',
+  authenticate,
+  authorize(PERMISSIONS.LG_REPORTS_VIEW),
+  validate({ query: schemas.listLimitQuerySchema }),
+  controller.getLedgerReconciliation
+);
+
+router.get(
   '/warehouse/receipts',
   authenticate,
   authorize(PERMISSIONS.INVENTORY_VIEW),
@@ -78,6 +94,22 @@ router.post(
   authorize(PERMISSIONS.DISPATCHES_POST),
   validate({ params: schemas.requisitionIdParamSchema, body: schemas.dispatchSchema }),
   controller.dispatchRequisition
+);
+
+router.post(
+  '/discrepancies/:itemId/resolve',
+  authenticate,
+  authorize(PERMISSIONS.DISCREPANCIES_CLOSE),
+  validate({ params: schemas.discrepancyIdParamSchema, body: schemas.resolveDiscrepancySchema }),
+  controller.resolveDiscrepancy
+);
+
+router.post(
+  '/requisitions/:requisitionId/close-short',
+  authenticate,
+  authorize(PERMISSIONS.DISCREPANCIES_CLOSE),
+  validate({ params: schemas.requisitionIdParamSchema, body: schemas.closeShortSchema }),
+  controller.closeShort
 );
 
 router.get(
@@ -180,6 +212,14 @@ router.post(
   authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
   validate({ params: schemas.orderIdParamSchema, body: schemas.fulfillOrderSchema }),
   controller.fulfillOrder
+);
+
+router.post(
+  '/orders/:orderId/receipts',
+  authenticate,
+  authorize(PERMISSIONS.WAREHOUSE_RECEIVE),
+  validate({ params: schemas.orderIdParamSchema, body: schemas.orderReceiptSchema }),
+  controller.receiveOrder
 );
 
 router.post(

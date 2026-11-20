@@ -13,7 +13,12 @@ const changePasswordSchema = z.object({
     .max(128, 'New password is too long')
 });
 
+const switchMembershipSchema = z.object({
+  membershipId: z.string().uuid('A valid membership id is required')
+});
+
 module.exports = {
   loginSchema,
-  changePasswordSchema
+  changePasswordSchema,
+  switchMembershipSchema
 };

@@ -25,6 +25,19 @@ const listReceipts = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
+const listWarehouseMovements = asyncHandler(async (req, res) => {
+  const result = await service.listWarehouseMovements({ scope: req.scope, filters: req.query });
+  res.json({ success: true, data: result });
+});
+
+const getLedgerReconciliation = asyncHandler(async (req, res) => {
+  const result = await service.getLedgerReconciliation({
+    scope: req.scope,
+    limit: req.query.limit || 100
+  });
+  res.json({ success: true, data: result });
+});
+
 const listRequisitions = asyncHandler(async (req, res) => {
   const result = await service.listRequisitions({ scope: req.scope, filters: req.query });
   res.json({ success: true, data: result });
@@ -72,6 +85,28 @@ const dispatchRequisition = asyncHandler(async (req, res) => {
     return res.status(202).json({ success: true, data: result });
   }
   return res.status(201).json({ success: true, data: result });
+});
+
+const resolveDiscrepancy = asyncHandler(async (req, res) => {
+  const result = await service.resolveDiscrepancy({
+    actor: req.user,
+    scope: req.scope,
+    itemId: req.params.itemId,
+    resolution: req.body.resolution,
+    note: req.body.note
+  });
+  res.json({ success: true, data: result });
+});
+
+const closeShort = asyncHandler(async (req, res) => {
+  const result = await service.closeShort({
+    actor: req.user,
+    scope: req.scope,
+    requisitionId: req.params.requisitionId,
+    items: req.body.items,
+    reason: req.body.reason
+  });
+  res.json({ success: true, data: result });
 });
 
 const listDispatches = asyncHandler(async (req, res) => {
@@ -157,6 +192,16 @@ const createOrder = asyncHandler(async (req, res) => {
 const listOrders = asyncHandler(async (req, res) => {
   const result = await service.listOrders({ scope: req.scope, status: req.query.status });
   res.json({ success: true, data: result });
+});
+
+const receiveOrder = asyncHandler(async (req, res) => {
+  const result = await service.receiveOrder({
+    actor: req.user,
+    scope: req.scope,
+    orderId: req.params.orderId,
+    payload: req.body
+  });
+  res.status(201).json({ success: true, data: result });
 });
 
 const getOrder = asyncHandler(async (req, res) => {
@@ -288,6 +333,7 @@ module.exports = {
   submitOrder,
   fulfillOrder,
   cancelOrder,
+  receiveOrder,
   getConsolidationCandidates,
   previewConsolidation,
   createConsolidation,
@@ -305,6 +351,8 @@ module.exports = {
   receiptReport: sendLgReport(service.buildReceiptReport),
   getWarehouse,
   getWarehouseBatches,
+  listWarehouseMovements,
+  getLedgerReconciliation,
   createReceipt,
   listReceipts,
   listRequisitions,
@@ -312,6 +360,8 @@ module.exports = {
   approveRequisition,
   rejectRequisition,
   dispatchRequisition,
+  resolveDiscrepancy,
+  closeShort,
   listDispatches,
   getDispatch
 };

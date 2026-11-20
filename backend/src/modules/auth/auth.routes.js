@@ -24,6 +24,12 @@ const loginLimiter = rateLimit({
 
 router.post('/auth/login', loginLimiter, validate({ body: schemas.loginSchema }), controller.login);
 router.get('/auth/me', authenticate, controller.me);
+router.post(
+  '/auth/membership',
+  authenticate,
+  validate({ body: schemas.switchMembershipSchema }),
+  controller.switchMembership
+);
 router.post('/auth/logout', authenticate, controller.logout);
 router.post('/auth/change-password', authenticate, validate({ body: schemas.changePasswordSchema }), controller.changePassword);
 

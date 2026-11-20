@@ -2,30 +2,22 @@ const asyncHandler = require('../../shared/utils/asyncHandler');
 const service = require('./notifications.service');
 
 const listNotifications = asyncHandler(async (req, res) => {
-  const result = await service.listNotifications(
-    req.scope.healthcareCentreId,
-    req.user.id,
-    req.query
-  );
+  const result = await service.listNotifications(req.scope, req.user.id, req.query);
   res.json({ success: true, data: result });
 });
 
 const getUnreadCount = asyncHandler(async (req, res) => {
-  const result = await service.getUnreadCount(req.scope.healthcareCentreId, req.user.id);
+  const result = await service.getUnreadCount(req.scope, req.user.id);
   res.json({ success: true, data: result });
 });
 
 const markRead = asyncHandler(async (req, res) => {
-  const result = await service.markRead(
-    req.scope.healthcareCentreId,
-    req.user.id,
-    req.params.notificationId
-  );
+  const result = await service.markRead(req.scope, req.user.id, req.params.notificationId);
   res.json({ success: true, data: result });
 });
 
 const markAllRead = asyncHandler(async (req, res) => {
-  const result = await service.markAllRead(req.scope.healthcareCentreId, req.user.id);
+  const result = await service.markAllRead(req.scope, req.user.id);
   res.json({ success: true, data: result });
 });
 

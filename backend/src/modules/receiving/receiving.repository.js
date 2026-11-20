@@ -33,11 +33,14 @@ const findBatchForUpdate = async (client, { healthcareCentreId, drugId, batchNum
 const insertBatch = async (client, batch) => {
   const { rows } = await client.query(
     `INSERT INTO batches
-       (healthcare_centre_id, drug_id, batch_number, expiry_date, quantity, unit_cost, received_date, supplier_reference, status)
-     VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::date, CURRENT_DATE), $8, 'usable')
+       (healthcare_centre_id, local_government_id, stock_location_id, drug_id, batch_number,
+        expiry_date, quantity, unit_cost, received_date, supplier_reference, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::date, CURRENT_DATE), $10, 'usable')
      RETURNING id, batch_number, expiry_date, quantity, unit_cost, received_date, supplier_reference, status`,
     [
       batch.healthcareCentreId,
+      batch.localGovernmentId,
+      batch.stockLocationId,
       batch.drugId,
       batch.batchNumber,
       batch.expiryDate || null,
@@ -68,8 +71,8 @@ const updateBatchAfterReceipt = async (client, { batchId, quantity, unitCost, ex
 const insertReceipt = async (client, receipt) => {
   const { rows } = await client.query(
     `INSERT INTO receipts
-       (healthcare_centre_id, receipt_reference, supplier, source, received_date, total_items, note, created_by, created_by_name)
-     VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6, $7, $8, $9)
+       (healthcare_centre_id, receipt_reference, supplier, source, received_date, total_items, note, created_by, created_by_name, idempotency_key)
+     VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6, $7, $8, $9, $10)
      RETURNING *`,
     [
       receipt.healthcareCentreId,
@@ -80,7 +83,8 @@ const insertReceipt = async (client, receipt) => {
       receipt.totalItems,
       receipt.note || null,
       receipt.actorId,
-      receipt.actorName
+      receipt.actorName,
+      receipt.idempotencyKey || null
     ]
   );
   return rows[0];
@@ -181,8 +185,36 @@ const listReceiptItems = async (receiptId) => {
   return rows;
 };
 
+const findFacilityLocation = async (client, healthcareCentreId) => {
+  const executor = client || { query };
+  const { rows } = await executor.query(
+    `SELECT id, local_government_id
+       FROM stock_locations
+      WHERE healthcare_centre_id = $1
+        AND location_type = 'facility'
+        AND is_active = TRUE
+      ORDER BY created_at
+      LIMIT 1`,
+    [healthcareCentreId]
+  );
+  return rows[0] || null;
+};
+
+const findReceiptByKey = async (healthcareCentreId, idempotencyKey) => {
+  const { rows } = await query(
+    `SELECT * FROM receipts
+      WHERE healthcare_centre_id = $1
+        AND idempotency_key = $2
+      LIMIT 1`,
+    [healthcareCentreId, idempotencyKey]
+  );
+  return rows[0] || null;
+};
+
 module.exports = {
   findActiveDrugs,
+  findFacilityLocation,
+  findReceiptByKey,
   listActiveDrugCatalogue,
   findBatchForUpdate,
   insertBatch,

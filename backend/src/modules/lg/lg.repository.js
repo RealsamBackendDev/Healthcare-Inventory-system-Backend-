@@ -77,8 +77,8 @@ const findDrugs = async (localGovernmentId, drugIds) => {
 const insertReceipt = async (client, receipt) => {
   const { rows } = await client.query(
     `INSERT INTO lg_receipts
-       (local_government_id, receipt_number, supplier_name, supplier_reference, notes, received_by, received_by_name)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (local_government_id, receipt_number, supplier_name, supplier_reference, notes, received_by, received_by_name, idempotency_key, order_id, order_number)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING id, receipt_number, received_at`,
     [
       receipt.localGovernmentId,
@@ -87,7 +87,10 @@ const insertReceipt = async (client, receipt) => {
       receipt.supplierReference || null,
       receipt.notes || null,
       receipt.actorId,
-      receipt.actorName
+      receipt.actorName,
+      receipt.idempotencyKey || null,
+      receipt.orderId || null,
+      receipt.orderNumber || null
     ]
   );
   return rows[0];
@@ -99,6 +102,11 @@ const insertWarehouseBatch = async (client, batch) => {
        (healthcare_centre_id, local_government_id, stock_location_id, drug_id, batch_number,
         expiry_date, quantity, unit_cost, supplier_reference, received_date)
      VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, CURRENT_DATE)
+     ON CONFLICT (stock_location_id, drug_id, batch_number)
+     DO UPDATE SET quantity = batches.quantity + EXCLUDED.quantity,
+                   unit_cost = COALESCE(EXCLUDED.unit_cost, batches.unit_cost),
+                   supplier_reference = COALESCE(EXCLUDED.supplier_reference, batches.supplier_reference),
+                   updated_at = now()
      RETURNING id, batch_number, quantity`,
     [
       batch.localGovernmentId,
@@ -133,6 +141,7 @@ const insertReceiptItem = async (client, item) => {
 const listReceipts = async (localGovernmentId, limit) => {
   const { rows } = await query(
     `SELECT r.id, r.receipt_number, r.supplier_name, r.supplier_reference, r.received_by_name, r.received_at,
+            r.order_number,
             COALESCE(items.item_count, 0) AS item_count,
             COALESCE(items.total_quantity, 0) AS total_quantity
        FROM lg_receipts r
@@ -156,14 +165,45 @@ const listRequisitions = async ({ localGovernmentId, status, search, limit, offs
             r.created_by_name, r.submitted_at, r.reviewed_by_name, r.reviewed_at, r.created_at,
             hc.id AS healthcare_centre_id, hc.name AS centre_name, hc.code AS centre_code,
             COALESCE(items.item_count, 0) AS item_count,
-            COALESCE(items.total_quantity, 0) AS total_quantity
+            COALESCE(items.total_quantity, 0) AS total_quantity,
+            COALESCE(items.approved_quantity, 0) AS approved_total,
+            COALESCE(items.replacement_quantity, 0) AS replacement_total,
+            COALESCE(items.closed_short_quantity, 0) AS closed_short_total,
+            COALESCE(supply.dispatched_quantity, 0) AS dispatched_total,
+            COALESCE(supply.accepted_quantity, 0) AS accepted_total,
+            COALESCE(supply.in_transit_quantity, 0) AS transit_total,
+            COALESCE(supply.missing_quantity, 0) AS missing_total,
+            COALESCE(supply.damaged_quantity, 0) AS damaged_total,
+            COALESCE(supply.written_off_quantity, 0) AS written_off_total,
+            COALESCE(supply.open_quantity, 0) AS open_total
        FROM requisitions r
        JOIN healthcare_centres hc ON hc.id = r.healthcare_centre_id
        LEFT JOIN (
-         SELECT requisition_id, count(*)::int AS item_count, SUM(requested_quantity) AS total_quantity
+         SELECT requisition_id, count(*)::int AS item_count, SUM(requested_quantity) AS total_quantity,
+                SUM(approved_quantity) AS approved_quantity,
+                SUM(replacement_authorised_quantity) AS replacement_quantity,
+                SUM(closed_short_quantity) AS closed_short_quantity
            FROM requisition_items
           GROUP BY requisition_id
        ) items ON items.requisition_id = r.id
+       LEFT JOIN (
+         SELECT disp.requisition_id,
+                SUM(di.quantity) AS dispatched_quantity,
+                SUM(di.accepted_quantity) AS accepted_quantity,
+                SUM(di.missing_quantity) AS missing_quantity,
+                SUM(di.damaged_quantity) AS damaged_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'resolved' AND di.discrepancy_resolution = 'written_off'
+                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
+                SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
+                         THEN di.quantity - di.accepted_quantity - di.damaged_quantity - di.missing_quantity
+                         ELSE 0 END) AS in_transit_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'open'
+                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS open_quantity
+           FROM lg_dispatch_items di
+           JOIN lg_dispatches disp ON disp.id = di.dispatch_id
+          WHERE disp.status <> 'cancelled'
+          GROUP BY disp.requisition_id
+       ) supply ON supply.requisition_id = r.id
       WHERE r.local_government_id = $1
         AND ($2::text IS NULL OR r.status = $2)
         AND ($3::text IS NULL OR r.requisition_number ILIKE '%' || $3 || '%'
@@ -214,12 +254,16 @@ const lockRequisition = async (client, localGovernmentId, requisitionId) => {
 
 const listRequisitionItems = async (requisitionId) => {
   const { rows } = await query(
-    `SELECT ri.id, ri.drug_id, ri.requested_quantity, ri.approved_quantity, ri.is_auto_generated,
+    `SELECT ri.id, ri.drug_id, ri.requested_quantity, ri.approved_quantity, ri.suggested_quantity,
+            ri.replacement_authorised_quantity, ri.closed_short_quantity,
+            ri.is_auto_generated,
             d.code AS drug_code, d.name AS drug_name, d.unit_of_measure,
             COALESCE(agg.dispatched_quantity, 0) AS dispatched_quantity,
             COALESCE(agg.accepted_quantity, 0) AS accepted_quantity,
             COALESCE(agg.damaged_quantity, 0) AS damaged_quantity,
             COALESCE(agg.missing_quantity, 0) AS missing_quantity,
+            COALESCE(agg.written_off_quantity, 0) AS written_off_quantity,
+            COALESCE(agg.open_quantity, 0) AS open_quantity,
             COALESCE(agg.in_transit_quantity, 0) AS in_transit_quantity
        FROM requisition_items ri
        JOIN drugs d ON d.id = ri.drug_id
@@ -229,9 +273,13 @@ const listRequisitionItems = async (requisitionId) => {
                 SUM(di.accepted_quantity) AS accepted_quantity,
                 SUM(di.damaged_quantity) AS damaged_quantity,
                 SUM(di.missing_quantity) AS missing_quantity,
-                SUM(CASE WHEN disp.status = 'dispatched'
+                SUM(CASE WHEN di.discrepancy_status = 'resolved' AND di.discrepancy_resolution = 'written_off'
+                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
+                SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
                          THEN di.quantity - di.accepted_quantity - di.damaged_quantity - di.missing_quantity
-                         ELSE 0 END) AS in_transit_quantity
+                         ELSE 0 END) AS in_transit_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'open'
+                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS open_quantity
            FROM lg_dispatch_items di
            JOIN lg_dispatches disp ON disp.id = di.dispatch_id
           WHERE disp.status <> 'cancelled'
@@ -316,12 +364,23 @@ const decrementBatch = async (client, batchId, quantity) => {
   return rows[0] || null;
 };
 
+const findDispatchByKey = async (localGovernmentId, idempotencyKey) => {
+  const { rows } = await query(
+    `SELECT id FROM lg_dispatches
+      WHERE local_government_id = $1
+        AND idempotency_key = $2
+      LIMIT 1`,
+    [localGovernmentId, idempotencyKey]
+  );
+  return rows[0] || null;
+};
+
 const insertDispatch = async (client, dispatch) => {
   const { rows } = await client.query(
     `INSERT INTO lg_dispatches
        (local_government_id, requisition_id, healthcare_centre_id, dispatch_number, status, notes,
-        dispatched_by, dispatched_by_name)
-     VALUES ($1, $2, $3, $4, 'dispatched', $5, $6, $7)
+        dispatched_by, dispatched_by_name, idempotency_key)
+     VALUES ($1, $2, $3, $4, 'dispatched', $5, $6, $7, $8)
      RETURNING id, dispatch_number, dispatched_at`,
     [
       dispatch.localGovernmentId,
@@ -330,17 +389,19 @@ const insertDispatch = async (client, dispatch) => {
       dispatch.dispatchNumber,
       dispatch.notes || null,
       dispatch.actorId,
-      dispatch.actorName
+      dispatch.actorName,
+      dispatch.idempotencyKey || null
     ]
   );
   return rows[0];
 };
 
 const insertDispatchItem = async (client, item) => {
-  await client.query(
+  const { rows } = await client.query(
     `INSERT INTO lg_dispatch_items
-       (dispatch_id, drug_id, batch_id, batch_number, expiry_date, quantity, unit_cost)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       (dispatch_id, drug_id, batch_id, batch_number, expiry_date, quantity, unit_cost, transit_batch_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id`,
     [
       item.dispatchId,
       item.drugId,
@@ -348,9 +409,11 @@ const insertDispatchItem = async (client, item) => {
       item.batchNumber,
       item.expiryDate || null,
       item.quantity,
-      item.unitCost === undefined ? null : item.unitCost
+      item.unitCost === undefined ? null : item.unitCost,
+      item.transitBatchId || null
     ]
   );
+  return rows[0];
 };
 
 const listDispatches = async (localGovernmentId, limit) => {
@@ -390,7 +453,9 @@ const findDispatch = async (localGovernmentId, dispatchId) => {
 const listDispatchItems = async (dispatchId) => {
   const { rows } = await query(
     `SELECT di.id, di.drug_id, di.batch_id, di.batch_number, di.expiry_date, di.quantity, di.unit_cost,
-            di.accepted_quantity, di.damaged_quantity, di.missing_quantity, di.discrepancy_reason,
+            di.transit_batch_id, di.accepted_quantity, di.damaged_quantity, di.missing_quantity,
+            di.discrepancy_reason,
+            di.discrepancy_status, di.discrepancy_resolution, di.discrepancy_note,
             d.code AS drug_code, d.name AS drug_name, d.unit_of_measure
        FROM lg_dispatch_items di
        JOIN drugs d ON d.id = di.drug_id
@@ -500,7 +565,10 @@ const markDispatchAccounted = async (client, receipt) => {
 const updateDispatchItemReceipt = async (client, item) => {
   const { rows } = await client.query(
     `UPDATE lg_dispatch_items
-        SET accepted_quantity = $2, damaged_quantity = $3, missing_quantity = $4, discrepancy_reason = $5
+        SET accepted_quantity = accepted_quantity + $2,
+            damaged_quantity = damaged_quantity + $3,
+            missing_quantity = missing_quantity + $4,
+            discrepancy_reason = COALESCE($5, discrepancy_reason)
       WHERE id = $1
       RETURNING id, drug_id, batch_id, batch_number, expiry_date, quantity, unit_cost,
                 accepted_quantity, damaged_quantity, missing_quantity`,
@@ -519,8 +587,8 @@ const insertDispatchReceipt = async (client, receipt) => {
   const { rows } = await client.query(
     `INSERT INTO lg_dispatch_receipts
        (local_government_id, healthcare_centre_id, dispatch_id, requisition_id, note,
-        received_by, received_by_name)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+        received_by, received_by_name, accepted_quantity, damaged_quantity, missing_quantity)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING *`,
     [
       receipt.localGovernmentId,
@@ -529,7 +597,10 @@ const insertDispatchReceipt = async (client, receipt) => {
       receipt.requisitionId,
       receipt.note || null,
       receipt.actorId,
-      receipt.actorName
+      receipt.actorName,
+      receipt.acceptedQuantity || 0,
+      receipt.damagedQuantity || 0,
+      receipt.missingQuantity || 0
     ]
   );
   return rows[0];
@@ -708,14 +779,39 @@ const demandReportRows = async ({ localGovernmentId, from, to, status }) => {
     `SELECT r.requisition_number, hc.name AS centre_name, hc.code AS centre_code, r.status,
             r.created_at, r.submitted_at, r.reviewed_by_name, r.reviewed_at,
             COALESCE(items.item_count, 0) AS item_count,
-            COALESCE(items.total_quantity, 0) AS total_quantity
+            COALESCE(items.total_quantity, 0) AS total_quantity,
+            COALESCE(items.approved_quantity, 0) AS approved_quantity,
+            COALESCE(items.closed_short_quantity, 0) AS closed_short_quantity,
+            COALESCE(supply.dispatched_quantity, 0) AS dispatched_quantity,
+            COALESCE(supply.accepted_quantity, 0) AS accepted_quantity,
+            COALESCE(supply.in_transit_quantity, 0) AS in_transit_quantity,
+            COALESCE(supply.missing_quantity, 0) AS missing_quantity,
+            COALESCE(supply.damaged_quantity, 0) AS damaged_quantity,
+            COALESCE(supply.open_discrepancies, 0)::int AS open_discrepancies
        FROM requisitions r
        JOIN healthcare_centres hc ON hc.id = r.healthcare_centre_id
        LEFT JOIN (
-         SELECT requisition_id, count(*)::int AS item_count, SUM(requested_quantity) AS total_quantity
+         SELECT requisition_id, count(*)::int AS item_count, SUM(requested_quantity) AS total_quantity,
+                SUM(approved_quantity) AS approved_quantity,
+                SUM(closed_short_quantity) AS closed_short_quantity
            FROM requisition_items
           GROUP BY requisition_id
        ) items ON items.requisition_id = r.id
+       LEFT JOIN (
+         SELECT disp.requisition_id,
+                SUM(di.quantity) AS dispatched_quantity,
+                SUM(di.accepted_quantity) AS accepted_quantity,
+                SUM(di.missing_quantity) AS missing_quantity,
+                SUM(di.damaged_quantity) AS damaged_quantity,
+                SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
+                         THEN di.quantity - di.accepted_quantity - di.damaged_quantity - di.missing_quantity
+                         ELSE 0 END) AS in_transit_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'open' THEN 1 ELSE 0 END) AS open_discrepancies
+           FROM lg_dispatch_items di
+           JOIN lg_dispatches disp ON disp.id = di.dispatch_id
+          WHERE disp.status <> 'cancelled'
+          GROUP BY disp.requisition_id
+       ) supply ON supply.requisition_id = r.id
       WHERE r.local_government_id = $1
         AND ($2::date IS NULL OR r.created_at::date >= $2)
         AND ($3::date IS NULL OR r.created_at::date <= $3)
@@ -732,13 +828,27 @@ const warehouseReportRows = async ({ localGovernmentId, warehouseId }) => {
             COALESCE(SUM(b.quantity), 0) AS quantity,
             COALESCE(SUM(b.quantity * COALESCE(b.unit_cost, 0)), 0) AS value,
             count(b.id)::int AS batch_count,
-            MIN(b.expiry_date) AS nearest_expiry
+            MIN(b.expiry_date) AS nearest_expiry,
+            COALESCE(MAX(supply.in_transit_quantity), 0) AS in_transit_quantity,
+            COALESCE(MAX(supply.open_discrepancies), 0)::int AS open_discrepancies
        FROM drugs d
        LEFT JOIN batches b
               ON b.drug_id = d.id
              AND b.stock_location_id = $2
              AND b.status = 'usable'
              AND b.quantity > 0
+       LEFT JOIN (
+         SELECT di.drug_id,
+                SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
+                         THEN di.quantity - di.accepted_quantity - di.damaged_quantity - di.missing_quantity
+                         ELSE 0 END) AS in_transit_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'open' THEN 1 ELSE 0 END) AS open_discrepancies
+           FROM lg_dispatch_items di
+           JOIN lg_dispatches disp ON disp.id = di.dispatch_id
+          WHERE disp.local_government_id = $1
+            AND disp.status <> 'cancelled'
+          GROUP BY di.drug_id
+       ) supply ON supply.drug_id = d.id
       WHERE d.local_government_id = $1
         AND d.is_active = TRUE
       GROUP BY d.id, d.code, d.name, d.unit_of_measure
@@ -753,11 +863,21 @@ const dispatchReportRows = async ({ localGovernmentId, from, to, status }) => {
     `SELECT d.dispatch_number, hc.name AS centre_name, hc.code AS centre_code, d.status,
             d.dispatched_at, d.dispatched_by_name, d.received_at, d.received_by_name,
             COALESCE(items.item_count, 0) AS item_count,
-            COALESCE(items.total_quantity, 0) AS total_quantity
+            COALESCE(items.total_quantity, 0) AS total_quantity,
+            COALESCE(items.accepted_quantity, 0) AS accepted_quantity,
+            COALESCE(items.damaged_quantity, 0) AS damaged_quantity,
+            COALESCE(items.missing_quantity, 0) AS missing_quantity,
+            COALESCE(items.in_transit_quantity, 0) AS in_transit_quantity,
+            COALESCE(items.open_discrepancies, 0)::int AS open_discrepancies
        FROM lg_dispatches d
        JOIN healthcare_centres hc ON hc.id = d.healthcare_centre_id
        LEFT JOIN (
-         SELECT dispatch_id, count(*)::int AS item_count, SUM(quantity) AS total_quantity
+         SELECT dispatch_id, count(*)::int AS item_count, SUM(quantity) AS total_quantity,
+                SUM(accepted_quantity) AS accepted_quantity,
+                SUM(damaged_quantity) AS damaged_quantity,
+                SUM(missing_quantity) AS missing_quantity,
+                SUM(quantity - accepted_quantity - damaged_quantity - missing_quantity) AS in_transit_quantity,
+                SUM(CASE WHEN discrepancy_status = 'open' THEN 1 ELSE 0 END) AS open_discrepancies
            FROM lg_dispatch_items
           GROUP BY dispatch_id
        ) items ON items.dispatch_id = d.id
@@ -811,6 +931,352 @@ const insertTransferMovement = async (client, movement) => {
       movement.requisitionId || null
     ]
   );
+};
+
+const insertReceiptMovement = async (client, movement) => {
+  await client.query(
+    `INSERT INTO stock_movements
+       (healthcare_centre_id, drug_id, batch_id, movement_type, quantity, reason,
+        actor_user_id, actor_full_name, source_reference, correlation_id)
+     VALUES (NULL, $1, $2, 'receipt', $3, $4, $5, $6, $7, $8)`,
+    [
+      movement.drugId,
+      movement.batchId,
+      movement.quantity,
+      movement.reason || null,
+      movement.actorId,
+      movement.actorName,
+      movement.sourceReference || null,
+      movement.correlationId || null
+    ]
+  );
+};
+
+const warehouseMovements = async ({ localGovernmentId, warehouseId, limit, drugId, movementType, from, to }) => {
+  const { rows } = await query(
+    `SELECT sm.id, sm.movement_type, sm.quantity, sm.reason, sm.source_reference,
+            sm.actor_full_name, sm.created_at, sm.requisition_id,
+            d.id AS drug_id, d.code AS drug_code, d.name AS drug_name, d.unit_of_measure,
+            b.batch_number, b.expiry_date, b.stock_location_id,
+            sl.name AS location_name, sl.location_type
+       FROM stock_movements sm
+       JOIN drugs d ON d.id = sm.drug_id
+       JOIN batches b ON b.id = sm.batch_id
+       LEFT JOIN stock_locations sl ON sl.id = b.stock_location_id
+      WHERE sm.local_government_id = $1
+        AND (b.stock_location_id = $2 OR sl.location_type = 'in_transit')
+        AND ($3::uuid IS NULL OR sm.drug_id = $3)
+        AND ($4::text IS NULL OR sm.movement_type = $4)
+        AND ($5::date IS NULL OR sm.created_at::date >= $5)
+        AND ($6::date IS NULL OR sm.created_at::date <= $6)
+      ORDER BY sm.created_at DESC, sm.id
+      LIMIT $7`,
+    [
+      localGovernmentId,
+      warehouseId,
+      drugId || null,
+      movementType || null,
+      from || null,
+      to || null,
+      limit
+    ]
+  );
+  return rows;
+};
+
+const ledgerReconciliation = async (localGovernmentId, limit) => {
+  const { rows } = await query(
+    `WITH movement_totals AS (
+       SELECT m.batch_id, SUM(m.quantity) AS movement_quantity, COUNT(*)::int AS movement_count
+         FROM stock_movements m
+        WHERE m.local_government_id = $1
+          AND m.batch_id IS NOT NULL
+        GROUP BY m.batch_id
+     )
+     SELECT b.id AS batch_id, b.batch_number, b.quantity AS batch_quantity, b.status,
+            d.code AS drug_code, d.name AS drug_name,
+            sl.name AS location_name, sl.location_type,
+            COALESCE(mt.movement_quantity, 0) AS movement_quantity,
+            COALESCE(mt.movement_count, 0) AS movement_count,
+            b.quantity - COALESCE(mt.movement_quantity, 0) AS difference
+       FROM batches b
+       JOIN drugs d ON d.id = b.drug_id
+       JOIN stock_locations sl ON sl.id = b.stock_location_id
+       LEFT JOIN movement_totals mt ON mt.batch_id = b.id
+      WHERE b.local_government_id = $1
+        AND (b.quantity <> 0 OR COALESCE(mt.movement_quantity, 0) <> 0)
+      ORDER BY ABS(b.quantity - COALESCE(mt.movement_quantity, 0)) DESC, d.name, b.batch_number
+      LIMIT $2`,
+    [localGovernmentId, limit]
+  );
+  return rows;
+};
+
+const findOrCreateTransitLocation = async (client, localGovernmentId) => {
+  const existing = await client.query(
+    `SELECT id, local_government_id, name
+       FROM stock_locations
+      WHERE local_government_id = $1
+        AND location_type = 'in_transit'
+      LIMIT 1`,
+    [localGovernmentId]
+  );
+  if (existing.rows[0]) {
+    return existing.rows[0];
+  }
+
+  await client.query(
+    `INSERT INTO stock_locations (local_government_id, healthcare_centre_id, location_type, name, code)
+     SELECT lg.id, NULL, 'in_transit', lg.name || ' stock in transit', lg.code || '-TRANSIT'
+       FROM local_governments lg
+      WHERE lg.id = $1
+     ON CONFLICT DO NOTHING`,
+    [localGovernmentId]
+  );
+
+  const { rows } = await client.query(
+    `SELECT id, local_government_id, name
+       FROM stock_locations
+      WHERE local_government_id = $1
+        AND location_type = 'in_transit'
+      LIMIT 1`,
+    [localGovernmentId]
+  );
+  return rows[0];
+};
+
+const insertTransitBatch = async (client, batch) => {
+  const { rows } = await client.query(
+    `INSERT INTO batches
+       (healthcare_centre_id, local_government_id, stock_location_id, drug_id, batch_number,
+        expiry_date, quantity, unit_cost, supplier_reference, received_date, status)
+     VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, CURRENT_DATE, 'usable')
+     ON CONFLICT (stock_location_id, drug_id, batch_number)
+     DO UPDATE SET quantity = batches.quantity + EXCLUDED.quantity,
+                   updated_at = now()
+     RETURNING id, batch_number, quantity`,
+    [
+      batch.localGovernmentId,
+      batch.stockLocationId,
+      batch.drugId,
+      batch.batchNumber,
+      batch.expiryDate || null,
+      batch.quantity,
+      batch.unitCost === undefined ? null : batch.unitCost,
+      batch.supplierReference || null
+    ]
+  );
+  return rows[0];
+};
+
+const insertLocationMovement = async (client, movement) => {
+  await client.query(
+    `INSERT INTO stock_movements
+       (healthcare_centre_id, drug_id, batch_id, movement_type, quantity, reason,
+        actor_user_id, actor_full_name, source_reference, requisition_id)
+     VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      movement.drugId,
+      movement.batchId,
+      movement.movementType,
+      movement.quantity,
+      movement.reason || null,
+      movement.actorId,
+      movement.actorName,
+      movement.sourceReference || null,
+      movement.requisitionId || null
+    ]
+  );
+};
+
+const releaseTransitQuantity = async (client, entry) => {
+  const quantity = Number(entry.quantity || 0);
+  if (!entry.transitBatchId || quantity <= 0) {
+    return true;
+  }
+
+  const { rows } = await client.query(
+    `UPDATE batches
+        SET quantity = quantity - $2, updated_at = now()
+      WHERE id = $1
+        AND quantity >= $2
+      RETURNING id`,
+    [entry.transitBatchId, quantity]
+  );
+  if (!rows[0]) {
+    return false;
+  }
+
+  await insertLocationMovement(client, {
+    drugId: entry.drugId,
+    batchId: entry.transitBatchId,
+    movementType: entry.movementType || 'transit_out',
+    quantity: -quantity,
+    reason: entry.reason,
+    actorId: entry.actorId,
+    actorName: entry.actorName,
+    sourceReference: entry.sourceReference,
+    requisitionId: entry.requisitionId
+  });
+  return true;
+};
+
+const insertQuarantineBatch = async (client, batch) => {
+  const { rows } = await client.query(
+    `INSERT INTO batches
+       (healthcare_centre_id, local_government_id, stock_location_id, drug_id, batch_number,
+        expiry_date, quantity, unit_cost, supplier_reference, received_date, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_DATE, 'quarantined')
+     ON CONFLICT (stock_location_id, drug_id, batch_number)
+     DO UPDATE SET quantity = batches.quantity + EXCLUDED.quantity,
+                   updated_at = now()
+     RETURNING id, batch_number, quantity, status`,
+    [
+      batch.healthcareCentreId,
+      batch.localGovernmentId,
+      batch.stockLocationId,
+      batch.drugId,
+      batch.batchNumber,
+      batch.expiryDate || null,
+      batch.quantity,
+      batch.unitCost === undefined ? null : batch.unitCost,
+      batch.supplierReference || null
+    ]
+  );
+  return rows[0];
+};
+
+const openDispatchItemDiscrepancy = async (client, itemId) => {
+  await client.query(
+    `UPDATE lg_dispatch_items
+        SET discrepancy_status = 'open'
+      WHERE id = $1
+        AND missing_quantity > 0`,
+    [itemId]
+  );
+};
+
+const countOpenDiscrepancies = async (client, requisitionId) => {
+  const { rows } = await client.query(
+    `SELECT count(*)::int AS total
+       FROM lg_dispatch_items di
+       JOIN lg_dispatches d ON d.id = di.dispatch_id
+      WHERE d.requisition_id = $1
+        AND d.status <> 'cancelled'
+        AND di.discrepancy_status = 'open'`,
+    [requisitionId]
+  );
+  return rows[0].total;
+};
+
+const listRequisitionDiscrepancies = async (requisitionId) => {
+  const { rows } = await query(
+    `SELECT di.id, di.dispatch_id, di.drug_id, di.quantity, di.missing_quantity,
+            di.discrepancy_status, di.discrepancy_resolution, di.discrepancy_reason,
+            di.discrepancy_note, di.resolved_at, di.resolved_by_name,
+            d.dispatch_number, dr.code AS drug_code, dr.name AS drug_name, dr.unit_of_measure
+       FROM lg_dispatch_items di
+       JOIN lg_dispatches d ON d.id = di.dispatch_id
+       JOIN drugs dr ON dr.id = di.drug_id
+      WHERE d.requisition_id = $1
+        AND d.status <> 'cancelled'
+        AND di.discrepancy_status <> 'none'
+      ORDER BY di.discrepancy_status DESC, dr.name`,
+    [requisitionId]
+  );
+  return rows;
+};
+
+const lockDiscrepancyItem = async (client, itemId, localGovernmentId) => {
+  const { rows } = await client.query(
+    `SELECT di.id, di.dispatch_id, di.drug_id, di.missing_quantity, di.transit_batch_id,
+            di.discrepancy_status,
+            d.requisition_id, d.healthcare_centre_id, d.dispatch_number,
+            dr.name AS drug_name, dr.code AS drug_code
+       FROM lg_dispatch_items di
+       JOIN lg_dispatches d ON d.id = di.dispatch_id
+       JOIN drugs dr ON dr.id = di.drug_id
+      WHERE di.id = $1
+        AND d.local_government_id = $2
+        AND d.status <> 'cancelled'
+      FOR UPDATE OF di`,
+    [itemId, localGovernmentId]
+  );
+  return rows[0] || null;
+};
+
+const resolveDiscrepancyItem = async (client, entry) => {
+  const { rows } = await client.query(
+    `UPDATE lg_dispatch_items
+        SET discrepancy_status = 'resolved',
+            discrepancy_resolution = $2,
+            discrepancy_note = $3,
+            resolved_at = now(),
+            resolved_by = $4,
+            resolved_by_name = $5
+      WHERE id = $1
+      RETURNING id, discrepancy_status, discrepancy_resolution, resolved_at, resolved_by_name`,
+    [entry.itemId, entry.resolution, entry.note, entry.actorId, entry.actorName]
+  );
+  return rows[0] || null;
+};
+
+const requisitionDiscrepancyBalances = async (client, requisitionId) => {
+  const { rows } = await client.query(
+    `SELECT ri.id, ri.approved_quantity,
+            ri.replacement_authorised_quantity, ri.closed_short_quantity,
+            COALESCE(agg.accepted_quantity, 0) AS accepted_quantity,
+            COALESCE(agg.written_off_quantity, 0) AS written_off_quantity,
+            COALESCE(agg.open_count, 0)::int AS open_count
+       FROM requisition_items ri
+       LEFT JOIN (
+         SELECT di.drug_id, disp.requisition_id,
+                SUM(di.accepted_quantity) AS accepted_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'resolved'
+                          AND di.discrepancy_resolution = 'written_off'
+                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'open' THEN 1 ELSE 0 END) AS open_count
+           FROM lg_dispatch_items di
+           JOIN lg_dispatches disp ON disp.id = di.dispatch_id
+          WHERE disp.status <> 'cancelled'
+          GROUP BY di.drug_id, disp.requisition_id
+       ) agg ON agg.drug_id = ri.drug_id AND agg.requisition_id = ri.requisition_id
+      WHERE ri.requisition_id = $1`,
+    [requisitionId]
+  );
+  return rows;
+};
+
+const bumpRequisitionItemCounters = async (client, { requisitionId, drugId, replacement, closedShort }) => {
+  const { rows } = await client.query(
+    `UPDATE requisition_items
+        SET replacement_authorised_quantity = replacement_authorised_quantity + $3,
+            closed_short_quantity = closed_short_quantity + $4
+      WHERE requisition_id = $1
+        AND drug_id = $2
+      RETURNING id, replacement_authorised_quantity, closed_short_quantity`,
+    [requisitionId, drugId, replacement || 0, closedShort || 0]
+  );
+  return rows[0] || null;
+};
+
+const insertShortClosure = async (client, closure) => {
+  const { rows } = await client.query(
+    `INSERT INTO requisition_short_closures
+       (requisition_id, requisition_item_id, drug_id, quantity, reason, closed_by, closed_by_name)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, quantity, created_at`,
+    [
+      closure.requisitionId,
+      closure.requisitionItemId,
+      closure.drugId,
+      closure.quantity,
+      closure.reason,
+      closure.actorId,
+      closure.actorName
+    ]
+  );
+  return rows[0];
 };
 
 const listConsolidationCandidates = async (localGovernmentId) => {
@@ -1098,11 +1564,60 @@ const lockOrder = async (client, localGovernmentId, orderId) => {
 
 const listOrderItems = async (orderId) => {
   const { rows } = await query(
-    `SELECT i.*, d.code, d.name, d.unit_of_measure
+    `SELECT i.*, d.code, d.name, d.unit_of_measure,
+            COALESCE((
+              SELECT SUM(ri.quantity)
+                FROM lg_receipt_items ri
+                JOIN lg_receipts r ON r.id = ri.receipt_id
+               WHERE r.order_id = i.order_id
+                 AND ri.drug_id = i.drug_id
+            ), 0) AS received_quantity
        FROM lg_order_items i
        JOIN drugs d ON d.id = i.drug_id
       WHERE i.order_id = $1
       ORDER BY d.name`,
+    [orderId]
+  );
+  return rows;
+};
+
+const orderReceivedQuantities = async (orderId) => {
+  const { rows } = await query(
+    `SELECT ri.drug_id, SUM(ri.quantity) AS received_quantity
+       FROM lg_receipt_items ri
+       JOIN lg_receipts r ON r.id = ri.receipt_id
+      WHERE r.order_id = $1
+      GROUP BY ri.drug_id`,
+    [orderId]
+  );
+  return rows;
+};
+
+const listOrderReceipts = async (orderId) => {
+  const { rows } = await query(
+    `SELECT r.id, r.receipt_number, r.supplier_name, r.supplier_reference, r.received_by_name, r.received_at,
+            COALESCE(items.item_count, 0) AS item_count,
+            COALESCE(items.total_quantity, 0) AS total_quantity
+       FROM lg_receipts r
+       LEFT JOIN (
+         SELECT receipt_id, count(*)::int AS item_count, SUM(quantity) AS total_quantity
+           FROM lg_receipt_items
+          GROUP BY receipt_id
+       ) items ON items.receipt_id = r.id
+      WHERE r.order_id = $1
+      ORDER BY r.received_at`,
+    [orderId]
+  );
+  return rows;
+};
+
+const listOrderSources = async (orderId) => {
+  const { rows } = await query(
+    `SELECT s.requisition_id, s.requisition_number, s.centre_name, s.requested_quantity
+       FROM lg_orders o
+       JOIN lg_consolidation_sources s ON s.consolidation_id = o.consolidation_id
+      WHERE o.id = $1
+      ORDER BY s.centre_name, s.requisition_number`,
     [orderId]
   );
   return rows;
@@ -1119,10 +1634,14 @@ const updateOrderStatus = async (
             submitted_by = CASE WHEN $2 = 'submitted' THEN $3 ELSE submitted_by END,
             submitted_by_name = CASE WHEN $2 = 'submitted' THEN $4 ELSE submitted_by_name END,
             submitted_at = CASE WHEN $2 = 'submitted' THEN now() ELSE submitted_at END,
-            fulfilled_by = CASE WHEN $2 = 'fulfilled' THEN $3 ELSE fulfilled_by END,
-            fulfilled_by_name = CASE WHEN $2 = 'fulfilled' THEN $4 ELSE fulfilled_by_name END,
-            fulfilled_at = CASE WHEN $2 = 'fulfilled' THEN now() ELSE fulfilled_at END,
-            fulfilled_note = CASE WHEN $2 = 'fulfilled' THEN $6 ELSE fulfilled_note END,
+            fulfilled_by = CASE WHEN $2 IN ('fulfilled', 'received') THEN $3 ELSE fulfilled_by END,
+            fulfilled_by_name = CASE WHEN $2 IN ('fulfilled', 'received') THEN $4 ELSE fulfilled_by_name END,
+            fulfilled_at = CASE WHEN $2 IN ('fulfilled', 'received') THEN now() ELSE fulfilled_at END,
+            fulfilled_note = CASE
+              WHEN $2 = 'fulfilled' THEN $6
+              WHEN $2 = 'received' THEN $6
+              ELSE fulfilled_note
+            END,
             cancelled_by = CASE WHEN $2 = 'cancelled' THEN $3 ELSE cancelled_by END,
             cancelled_by_name = CASE WHEN $2 = 'cancelled' THEN $4 ELSE cancelled_by_name END,
             cancelled_at = CASE WHEN $2 = 'cancelled' THEN now() ELSE cancelled_at END,
@@ -1186,8 +1705,8 @@ const insertFacilityTransfer = async (client, transfer) => {
 const insertFacilityTransferItem = async (client, item) => {
   await client.query(
     `INSERT INTO facility_transfer_items
-       (transfer_id, drug_id, source_batch_id, batch_number, expiry_date, quantity, unit_cost)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       (transfer_id, drug_id, source_batch_id, batch_number, expiry_date, quantity, unit_cost, transit_batch_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       item.transferId,
       item.drugId,
@@ -1195,7 +1714,8 @@ const insertFacilityTransferItem = async (client, item) => {
       item.batchNumber,
       item.expiryDate || null,
       item.quantity,
-      item.unitCost === undefined ? null : item.unitCost
+      item.unitCost === undefined ? null : item.unitCost,
+      item.transitBatchId || null
     ]
   );
 };
@@ -1309,6 +1829,23 @@ const insertTransferOutMovement = async (client, movement) => {
   );
 };
 
+const receiptSummaryByKey = async (localGovernmentId, idempotencyKey) => {
+  const { rows } = await query(
+    `SELECT r.id, r.receipt_number, r.received_at,
+            count(i.id)::int AS item_count,
+            COALESCE(SUM(i.quantity), 0) AS total_quantity,
+            COALESCE(SUM(i.quantity * COALESCE(i.unit_cost, 0)), 0) AS total_value
+       FROM lg_receipts r
+       LEFT JOIN lg_receipt_items i ON i.receipt_id = r.id
+      WHERE r.local_government_id = $1
+        AND r.idempotency_key = $2
+      GROUP BY r.id, r.receipt_number, r.received_at
+      LIMIT 1`,
+    [localGovernmentId, idempotencyKey]
+  );
+  return rows[0] || null;
+};
+
 module.exports = {
   findWarehouse,
   findFacilityLocation,
@@ -1316,6 +1853,7 @@ module.exports = {
   warehouseBatches,
   findDrugs,
   insertReceipt,
+  receiptSummaryByKey,
   insertWarehouseBatch,
   insertReceiptItem,
   listReceipts,
@@ -1329,6 +1867,7 @@ module.exports = {
   updateApprovedQuantities,
   lockAvailableBatches,
   decrementBatch,
+  findDispatchByKey,
   insertDispatch,
   insertDispatchItem,
   listDispatches,
@@ -1345,6 +1884,20 @@ module.exports = {
   markRequisitionReceived,
   insertFacilityBatch,
   insertTransferMovement,
+  insertReceiptMovement,
+  findOrCreateTransitLocation,
+  insertTransitBatch,
+  insertLocationMovement,
+  releaseTransitQuantity,
+  insertQuarantineBatch,
+  openDispatchItemDiscrepancy,
+  countOpenDiscrepancies,
+  listRequisitionDiscrepancies,
+  lockDiscrepancyItem,
+  resolveDiscrepancyItem,
+  requisitionDiscrepancyBalances,
+  bumpRequisitionItemCounters,
+  insertShortClosure,
   insertApproval,
   listApprovals,
   findApproval,
@@ -1376,6 +1929,9 @@ module.exports = {
   findOrderByConsolidation,
   lockOrder,
   listOrderItems,
+  orderReceivedQuantities,
+  listOrderReceipts,
+  listOrderSources,
   updateOrderStatus,
   listFacilityCentres,
   findFacilityCentre,
@@ -1389,5 +1945,7 @@ module.exports = {
   listIncomingFacilityTransfers,
   updateFacilityTransferStatus,
   incrementBatch,
-  insertTransferOutMovement
+  insertTransferOutMovement,
+  ledgerReconciliation,
+  warehouseMovements
 };

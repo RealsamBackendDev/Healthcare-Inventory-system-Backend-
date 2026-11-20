@@ -34,8 +34,14 @@ const requisitionIdParamSchema = z.object({
   requisitionId: z.string().uuid('A valid requisition id is required')
 });
 
+const suggestedItemSchema = z.object({
+  drugId: z.string().uuid('A valid drug id is required'),
+  quantity: z.coerce.number().min(0, 'Suggested quantity cannot be negative').max(1000000000)
+});
+
 const reviewRequisitionSchema = z.object({
-  comment: z.string().trim().max(500).nullable().optional()
+  comment: z.string().trim().max(500).nullable().optional(),
+  items: z.array(suggestedItemSchema).min(1, 'Add at least one suggested quantity').max(200)
 });
 
 const rejectRequisitionSchema = z.object({

@@ -20,6 +20,14 @@ router.get(
 );
 
 router.get(
+  '/reports/stock-position',
+  authenticate,
+  authorize(PERMISSIONS.REPORTS_VIEW),
+  validate({ query: schemas.reportQuerySchema }),
+  controller.stockPosition
+);
+
+router.get(
   '/reports/stock-movements',
   authenticate,
   authorize(PERMISSIONS.REPORTS_VIEW),

@@ -7,13 +7,44 @@ const listRequisitions = async ({ healthcareCentreId, status, search, from, to, 
             r.created_by, r.created_by_name, r.submitted_at, r.reviewed_by_name, r.reviewed_at,
             r.closed_at, r.parent_requisition_id, r.superseded_by_requisition_id, r.created_at, r.updated_at,
             COALESCE(items.item_count, 0) AS item_count,
-            COALESCE(items.total_quantity, 0) AS total_quantity
+            COALESCE(items.total_quantity, 0) AS total_quantity,
+            COALESCE(items.approved_quantity, 0) AS approved_total,
+            COALESCE(items.replacement_quantity, 0) AS replacement_total,
+            COALESCE(items.closed_short_quantity, 0) AS closed_short_total,
+            COALESCE(supply.dispatched_quantity, 0) AS dispatched_total,
+            COALESCE(supply.accepted_quantity, 0) AS accepted_total,
+            COALESCE(supply.in_transit_quantity, 0) AS transit_total,
+            COALESCE(supply.missing_quantity, 0) AS missing_total,
+            COALESCE(supply.damaged_quantity, 0) AS damaged_total,
+            COALESCE(supply.written_off_quantity, 0) AS written_off_total,
+            COALESCE(supply.open_quantity, 0) AS open_total
        FROM requisitions r
        LEFT JOIN (
-         SELECT requisition_id, count(*)::int AS item_count, SUM(requested_quantity) AS total_quantity
+         SELECT requisition_id, count(*)::int AS item_count, SUM(requested_quantity) AS total_quantity,
+                SUM(approved_quantity) AS approved_quantity,
+                SUM(replacement_authorised_quantity) AS replacement_quantity,
+                SUM(closed_short_quantity) AS closed_short_quantity
            FROM requisition_items
           GROUP BY requisition_id
        ) items ON items.requisition_id = r.id
+       LEFT JOIN (
+         SELECT disp.requisition_id,
+                SUM(di.quantity) AS dispatched_quantity,
+                SUM(di.accepted_quantity) AS accepted_quantity,
+                SUM(di.missing_quantity) AS missing_quantity,
+                SUM(di.damaged_quantity) AS damaged_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'resolved' AND di.discrepancy_resolution = 'written_off'
+                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
+                SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
+                         THEN di.quantity - di.accepted_quantity - di.damaged_quantity - di.missing_quantity
+                         ELSE 0 END) AS in_transit_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'open'
+                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS open_quantity
+           FROM lg_dispatch_items di
+           JOIN lg_dispatches disp ON disp.id = di.dispatch_id
+          WHERE disp.status <> 'cancelled'
+          GROUP BY disp.requisition_id
+       ) supply ON supply.requisition_id = r.id
       WHERE r.healthcare_centre_id = $1
         AND ($2::text IS NULL OR r.status = $2)
         AND ($3::text IS NULL OR r.requisition_number ILIKE '%' || $3 || '%' OR r.created_by_name ILIKE '%' || $3 || '%')
@@ -72,13 +103,19 @@ const lockRequisition = async (client, healthcareCentreId, requisitionId) => {
 
 const listItems = async (requisitionId) => {
   const { rows } = await query(
-    `SELECT ri.id, ri.drug_id, ri.requested_quantity, ri.approved_quantity, ri.is_auto_generated,
+    `SELECT ri.id, ri.drug_id, ri.requested_quantity, ri.approved_quantity, ri.suggested_quantity,
+            ri.replacement_authorised_quantity, ri.closed_short_quantity,
+            ri.is_auto_generated,
             d.code AS drug_code, d.name AS drug_name, d.unit_of_measure,
             COALESCE(fds.minimum_stock_level, 0) AS minimum_stock_level, d.is_active,
             COALESCE(stock.usable_quantity, 0) AS usable_quantity,
             COALESCE(agg.dispatched_quantity, 0) AS dispatched_quantity,
+            COALESCE(agg.accepted_quantity, 0) AS accepted_quantity,
             COALESCE(agg.in_transit_quantity, 0) AS in_transit_quantity,
-            COALESCE(agg.missing_quantity, 0) AS missing_quantity
+            COALESCE(agg.missing_quantity, 0) AS missing_quantity,
+            COALESCE(agg.damaged_quantity, 0) AS damaged_quantity,
+            COALESCE(agg.written_off_quantity, 0) AS written_off_quantity,
+            COALESCE(agg.open_quantity, 0) AS open_quantity
        FROM requisition_items ri
        JOIN drugs d ON d.id = ri.drug_id
        LEFT JOIN facility_drug_settings fds
@@ -95,10 +132,16 @@ const listItems = async (requisitionId) => {
        LEFT JOIN (
          SELECT di.drug_id, disp.requisition_id,
                 SUM(di.quantity) AS dispatched_quantity,
+                SUM(di.accepted_quantity) AS accepted_quantity,
                 SUM(di.missing_quantity) AS missing_quantity,
-                SUM(CASE WHEN disp.status = 'dispatched'
+                SUM(di.damaged_quantity) AS damaged_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'resolved' AND di.discrepancy_resolution = 'written_off'
+                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
+                SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
                          THEN di.quantity - di.accepted_quantity - di.damaged_quantity - di.missing_quantity
-                         ELSE 0 END) AS in_transit_quantity
+                         ELSE 0 END) AS in_transit_quantity,
+                SUM(CASE WHEN di.discrepancy_status = 'open'
+                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS open_quantity
            FROM lg_dispatch_items di
            JOIN lg_dispatches disp ON disp.id = di.dispatch_id
           WHERE disp.status <> 'cancelled'
@@ -270,7 +313,19 @@ const findShortages = async (healthcareCentreId) => {
   return rows;
 };
 
+const updateSuggestedQuantities = async (client, { requisitionId, items }) => {
+  for (const item of items) {
+    await client.query(
+      `UPDATE requisition_items
+          SET suggested_quantity = $3
+        WHERE requisition_id = $1 AND drug_id = $2`,
+      [requisitionId, item.drugId, item.quantity]
+    );
+  }
+};
+
 module.exports = {
+  updateSuggestedQuantities,
   listRequisitions,
   findDrugs,
   findRequisition,

@@ -1,53 +1,75 @@
 const { query } = require('../../database/connection');
 
-const listForUser = async ({ healthcareCentreId, userId, isRead, limit, offset }) => {
-  const params = [healthcareCentreId, userId, isRead === undefined ? null : isRead];
+const scopeCondition = `(
+  ($1::uuid IS NOT NULL AND n.healthcare_centre_id = $1)
+  OR ($1::uuid IS NULL AND n.healthcare_centre_id IS NULL AND n.local_government_id = $2)
+)`;
+
+const listForUser = async ({
+  healthcareCentreId,
+  localGovernmentId,
+  userId,
+  isRead,
+  limit,
+  offset
+}) => {
+  const params = [healthcareCentreId, localGovernmentId, userId, isRead === undefined ? null : isRead];
   const { rows } = await query(
-    `SELECT id, type, title, message, entity_type, entity_id, is_read, created_at
-       FROM notifications
-      WHERE healthcare_centre_id = $1
-        AND user_id = $2
-        AND ($3::boolean IS NULL OR is_read = $3)
-      ORDER BY created_at DESC
-      LIMIT $4 OFFSET $5`,
+    `SELECT n.id, n.type, n.title, n.message, n.entity_type, n.entity_id, n.is_read, n.created_at
+       FROM notifications n
+      WHERE ${scopeCondition}
+        AND n.user_id = $3
+        AND ($4::boolean IS NULL OR n.is_read = $4)
+      ORDER BY n.created_at DESC
+      LIMIT $5 OFFSET $6`,
     [...params, limit, offset]
   );
 
   const { rows: countRows } = await query(
     `SELECT count(*)::int AS total
-       FROM notifications
-      WHERE healthcare_centre_id = $1
-        AND user_id = $2
-        AND ($3::boolean IS NULL OR is_read = $3)`,
+       FROM notifications n
+      WHERE ${scopeCondition}
+        AND n.user_id = $3
+        AND ($4::boolean IS NULL OR n.is_read = $4)`,
     params
   );
 
   return { rows, total: countRows[0].total };
 };
 
-const countUnread = async (healthcareCentreId, userId) => {
+const countUnread = async ({ healthcareCentreId, localGovernmentId, userId }) => {
   const { rows } = await query(
-    'SELECT count(*)::int AS total FROM notifications WHERE healthcare_centre_id = $1 AND user_id = $2 AND is_read = FALSE',
-    [healthcareCentreId, userId]
+    `SELECT count(*)::int AS total
+       FROM notifications n
+      WHERE ${scopeCondition}
+        AND n.user_id = $3
+        AND n.is_read = FALSE`,
+    [healthcareCentreId, localGovernmentId, userId]
   );
   return rows[0].total;
 };
 
-const markRead = async (healthcareCentreId, userId, notificationId) => {
+const markRead = async ({ healthcareCentreId, localGovernmentId, userId, notificationId }) => {
   const { rows } = await query(
-    `UPDATE notifications
+    `UPDATE notifications n
         SET is_read = TRUE
-      WHERE healthcare_centre_id = $1 AND user_id = $2 AND id = $3
-      RETURNING id, is_read`,
-    [healthcareCentreId, userId, notificationId]
+      WHERE ${scopeCondition}
+        AND n.user_id = $3
+        AND n.id = $4
+      RETURNING n.id, n.is_read`,
+    [healthcareCentreId, localGovernmentId, userId, notificationId]
   );
   return rows[0] || null;
 };
 
-const markAllRead = async (healthcareCentreId, userId) => {
+const markAllRead = async ({ healthcareCentreId, localGovernmentId, userId }) => {
   const { rowCount } = await query(
-    'UPDATE notifications SET is_read = TRUE WHERE healthcare_centre_id = $1 AND user_id = $2 AND is_read = FALSE',
-    [healthcareCentreId, userId]
+    `UPDATE notifications n
+        SET is_read = TRUE
+      WHERE ${scopeCondition}
+        AND n.user_id = $3
+        AND n.is_read = FALSE`,
+    [healthcareCentreId, localGovernmentId, userId]
   );
   return rowCount;
 };

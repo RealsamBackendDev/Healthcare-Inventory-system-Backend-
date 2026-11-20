@@ -58,7 +58,8 @@ const approveRequisition = asyncHandler(async (req, res) => {
     actor: req.user,
     healthcareCentreId: req.scope.healthcareCentreId,
     requisitionId: req.params.requisitionId,
-    comment: req.body.comment
+    comment: req.body.comment,
+    items: req.body.items
   });
   res.json({ success: true, data: result });
 });

@@ -149,6 +149,58 @@ const buildInventoryReport = async (healthcareCentreId, filters = {}) => {
   };
 };
 
+const buildStockPositionReport = async (healthcareCentreId, filters = {}) => {
+  const rows = await repository.stockPositionRows(healthcareCentreId, {
+    search: filters.search || null
+  });
+  const totals = rows.reduce(
+    (sums, row) => ({
+      onHand: sums.onHand + Number(row.on_hand_quantity),
+      inTransit: sums.inTransit + Number(row.in_transit_quantity),
+      discrepancy: sums.discrepancy + Number(row.discrepancy_quantity),
+      expired: sums.expired + Number(row.expired_quantity)
+    }),
+    { onHand: 0, inTransit: 0, discrepancy: 0, expired: 0 }
+  );
+  return {
+    title: 'Stock Position Report',
+    subtitle: `Generated ${formatDateTime(new Date())} | On hand ${roundQuantity(
+      totals.onHand
+    )} | In transit ${roundQuantity(totals.inTransit)} (not counted as on hand) | Open discrepancy ${roundQuantity(
+      totals.discrepancy
+    )} | Expired ${roundQuantity(totals.expired)}`,
+    filename: 'stock-position-report',
+    columns: [
+      { header: 'Code', key: 'code', width: 16 },
+      { header: 'Drug', key: 'name', width: 26 },
+      { header: 'Unit', key: 'unitOfMeasure', width: 12 },
+      { header: 'On hand', key: 'onHandQuantity', width: 12 },
+      { header: 'In transit', key: 'inTransitQuantity', width: 12 },
+      { header: 'Open discrepancy', key: 'discrepancyQuantity', width: 16 },
+      { header: 'Expired', key: 'expiredQuantity', width: 12 },
+      { header: 'Requested (open)', key: 'requestedQuantity', width: 16 },
+      { header: 'Approved (open)', key: 'approvedQuantity', width: 16 },
+      { header: 'Dispatched (open)', key: 'dispatchedQuantity', width: 16 },
+      { header: 'Received (open)', key: 'receivedQuantity', width: 16 },
+      { header: 'Closed short', key: 'closedShortQuantity', width: 14 }
+    ],
+    rows: rows.map((row) => ({
+      code: row.code,
+      name: row.name,
+      unitOfMeasure: row.unit_of_measure,
+      onHandQuantity: roundQuantity(Number(row.on_hand_quantity)),
+      inTransitQuantity: roundQuantity(Number(row.in_transit_quantity)),
+      discrepancyQuantity: roundQuantity(Number(row.discrepancy_quantity)),
+      expiredQuantity: roundQuantity(Number(row.expired_quantity)),
+      requestedQuantity: roundQuantity(Number(row.requested_quantity)),
+      approvedQuantity: roundQuantity(Number(row.approved_quantity)),
+      dispatchedQuantity: roundQuantity(Number(row.dispatched_quantity)),
+      receivedQuantity: roundQuantity(Number(row.received_quantity)),
+      closedShortQuantity: roundQuantity(Number(row.closed_short_quantity))
+    }))
+  };
+};
+
 const buildMovementReport = async (healthcareCentreId, filters = {}) => {
   const rows = await repository.movementRows(healthcareCentreId, {
     from: parseDateInput(filters.from),
@@ -403,6 +455,7 @@ module.exports = {
   getDashboard,
   getReportOptions,
   buildInventoryReport,
+  buildStockPositionReport,
   buildMovementReport,
   buildDispensingReport,
   buildExpiryReport,

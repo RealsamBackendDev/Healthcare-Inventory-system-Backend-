@@ -13,6 +13,7 @@ const createReceiptSchema = z.object({
   supplierReference: z.string().trim().max(120).nullable().optional(),
   notes: z.string().trim().max(1000).nullable().optional(),
   thresholdApproved: z.boolean().optional(),
+  clientRequestId: z.string().trim().min(8).max(80).optional(),
   items: z.array(receiptItemSchema).min(1, 'Add at least one batch').max(100)
 });
 
@@ -38,6 +39,30 @@ const dispatchIdParamSchema = z.object({
   dispatchId: z.string().uuid('A valid dispatch id is required')
 });
 
+const discrepancyIdParamSchema = z.object({
+  itemId: z.string().uuid('A valid shortage id is required')
+});
+
+const resolveDiscrepancySchema = z.object({
+  resolution: z.enum(['reissue', 'written_off'], {
+    errorMap: () => ({ message: 'Choose whether the stock will be replaced or written off' })
+  }),
+  note: z.string().trim().min(3, 'Explain the decision in a few words').max(500)
+});
+
+const closeShortSchema = z.object({
+  reason: z.string().trim().min(3, 'Explain why the balance cannot be supplied').max(500),
+  items: z
+    .array(
+      z.object({
+        drugId: z.string().uuid('A valid drug id is required'),
+        quantity: z.coerce.number().positive('Quantity must be greater than zero').max(1000000000)
+      })
+    )
+    .min(1, 'Add at least one drug to close')
+    .max(100)
+});
+
 const approveRequisitionSchema = z.object({
   comment: z.string().trim().max(500).nullable().optional(),
   items: z
@@ -58,6 +83,7 @@ const rejectRequisitionSchema = z.object({
 const dispatchSchema = z.object({
   notes: z.string().trim().max(1000).nullable().optional(),
   thresholdApproved: z.boolean().optional(),
+  clientRequestId: z.string().trim().min(8).max(80).optional(),
   items: z
     .array(
       z.object({
@@ -72,6 +98,14 @@ const dispatchSchema = z.object({
 
 const listLimitQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional()
+});
+
+const warehouseMovementsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(300).optional(),
+  drugId: z.string().uuid().optional(),
+  movementType: z.string().trim().max(40).optional(),
+  from: z.string().trim().max(40).optional(),
+  to: z.string().trim().max(40).optional()
 });
 
 const receiveDeliverySchema = z.object({
@@ -137,7 +171,9 @@ const createOrderSchema = z.object({
 });
 
 const listOrdersQuerySchema = z.object({
-  status: z.enum(['draft', 'submitted', 'fulfilled', 'cancelled']).optional()
+  status: z
+    .enum(['draft', 'submitted', 'fulfilled', 'partially_received', 'received', 'cancelled'])
+    .optional()
 });
 
 const cancelOrderSchema = z.object({
@@ -146,6 +182,13 @@ const cancelOrderSchema = z.object({
 
 const fulfillOrderSchema = z.object({
   note: z.string().trim().max(500).nullable().optional()
+});
+
+const orderReceiptSchema = z.object({
+  supplierName: z.string().trim().max(160).nullable().optional(),
+  supplierReference: z.string().trim().max(120).nullable().optional(),
+  notes: z.string().trim().max(1000).nullable().optional(),
+  items: z.array(receiptItemSchema).min(1, 'Add at least one batch').max(100)
 });
 
 const consolidationIdParamSchema = z.object({
@@ -194,10 +237,14 @@ module.exports = {
   listRequisitionsQuerySchema,
   requisitionIdParamSchema,
   dispatchIdParamSchema,
+  discrepancyIdParamSchema,
+  resolveDiscrepancySchema,
+  closeShortSchema,
   approveRequisitionSchema,
   rejectRequisitionSchema,
   dispatchSchema,
   listLimitQuerySchema,
+  warehouseMovementsQuerySchema,
   receiveDeliverySchema,
   reportQuerySchema,
   transferIdParamSchema,
@@ -211,6 +258,7 @@ module.exports = {
   listOrdersQuerySchema,
   cancelOrderSchema,
   fulfillOrderSchema,
+  orderReceiptSchema,
   consolidationIdParamSchema,
   createConsolidationSchema,
   previewConsolidationSchema,

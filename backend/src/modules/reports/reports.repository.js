@@ -383,6 +383,26 @@ const returnRows = async (healthcareCentreId, { from, to, status }) => {
   return rows;
 };
 
+const damageRows = async (healthcareCentreId, { from, to, disposition }) => {
+  const { rows } = await query(
+    `SELECT dd.created_at, dd.batch_number, dd.quantity::float AS quantity, dd.disposition,
+            dd.loss_bearer, dd.replacement_owed, dd.agreed_with_name, dd.note,
+            dd.recorded_by_name, dd.return_status, dd.return_outcome, dd.return_received_at,
+            dd.source_reference, b.unit_cost,
+            d.code AS drug_code, d.name AS drug_name, d.unit_of_measure
+       FROM damage_dispositions dd
+       JOIN batches b ON b.id = dd.batch_id
+       JOIN drugs d ON d.id = dd.drug_id
+      WHERE dd.healthcare_centre_id = $1
+        AND ($2::date IS NULL OR dd.created_at::date >= $2)
+        AND ($3::date IS NULL OR dd.created_at::date <= $3)
+        AND ($4::text IS NULL OR dd.disposition = $4)
+      ORDER BY dd.created_at DESC`,
+    [healthcareCentreId, from || null, to || null, disposition || null]
+  );
+  return rows;
+};
+
 const auditRows = async (healthcareCentreId, { from, to, action, userId }) => {
   const { rows } = await query(
     `SELECT created_at, actor_full_name, actor_user_id, action, entity_type, entity_id, summary, reason
@@ -438,6 +458,7 @@ module.exports = {
   requisitionRows,
   adjustmentRows,
   returnRows,
+  damageRows,
   auditRows,
   listUsers,
   listDrugs

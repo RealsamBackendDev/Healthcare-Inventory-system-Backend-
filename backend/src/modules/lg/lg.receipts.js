@@ -18,13 +18,15 @@ const mapDispatchItem = (row) => ({
   acceptedQuantity: roundQuantity(Number(row.accepted_quantity || 0)),
   damagedQuantity: roundQuantity(Number(row.damaged_quantity || 0)),
   missingQuantity: roundQuantity(Number(row.missing_quantity || 0)),
+  rejectedQuantity: roundQuantity(Number(row.rejected_quantity || 0)),
   pendingQuantity: roundQuantity(
     Math.max(
       0,
       Number(row.quantity) -
         Number(row.accepted_quantity || 0) -
         Number(row.damaged_quantity || 0) -
-        Number(row.missing_quantity || 0)
+        Number(row.missing_quantity || 0) -
+        Number(row.rejected_quantity || 0)
     )
   ),
   discrepancyReason: row.discrepancy_reason || null,
@@ -48,6 +50,7 @@ const mapDispatch = (row) => ({
   acceptedQuantity: roundQuantity(Number(row.accepted_quantity || 0)),
   damagedQuantity: roundQuantity(Number(row.damaged_quantity || 0)),
   missingQuantity: roundQuantity(Number(row.missing_quantity || 0)),
+  rejectedQuantity: roundQuantity(Number(row.rejected_quantity || 0)),
   note: row.note || null
 });
 
@@ -73,15 +76,17 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
 
   if (Array.isArray(items) && items.length > 0) {
     items.forEach((entry, index) => {
-      ['acceptedQuantity', 'damagedQuantity', 'missingQuantity'].forEach((key) => {
-        const raw = entry[key];
-        const value = Number(raw === undefined || raw === null || raw === '' ? 0 : raw);
-        if (!Number.isFinite(value) || value < 0) {
-          throw new ValidationError('Received quantities cannot be negative', [
-            { field: `items.${index}.${key}`, message: 'Enter zero or more' }
-          ]);
+      ['acceptedQuantity', 'damagedQuantity', 'missingQuantity', 'rejectedQuantity'].forEach(
+        (key) => {
+          const raw = entry[key];
+          const value = Number(raw === undefined || raw === null || raw === '' ? 0 : raw);
+          if (!Number.isFinite(value) || value < 0) {
+            throw new ValidationError('Received quantities cannot be negative', [
+              { field: `items.${index}.${key}`, message: 'Enter zero or more' }
+            ]);
+          }
         }
-      });
+      );
     });
   }
 
@@ -125,13 +130,15 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
     let totalAccepted = 0;
     let totalDamaged = 0;
     let totalMissing = 0;
+    let totalRejected = 0;
 
     for (const item of dispatchItems) {
       const dispatched = roundQuantity(Number(item.quantity));
       const alreadyRecorded = roundQuantity(
         Number(item.accepted_quantity || 0) +
           Number(item.damaged_quantity || 0) +
-          Number(item.missing_quantity || 0)
+          Number(item.missing_quantity || 0) +
+          Number(item.rejected_quantity || 0)
       );
       const outstanding = roundQuantity(Math.max(0, dispatched - alreadyRecorded));
       const entry = supplied ? supplied.get(item.id) : null;
@@ -140,7 +147,8 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
         : outstanding;
       const damaged = supplied ? roundQuantity(Number((entry && entry.damagedQuantity) || 0)) : 0;
       const missing = supplied ? roundQuantity(Number((entry && entry.missingQuantity) || 0)) : 0;
-      const counted = roundQuantity(accepted + damaged + missing);
+      const rejected = supplied ? roundQuantity(Number((entry && entry.rejectedQuantity) || 0)) : 0;
+      const counted = roundQuantity(accepted + damaged + missing + rejected);
 
       if (counted > outstanding + 0.0005) {
         throw new ValidationError(
@@ -158,11 +166,13 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
         accepted,
         damaged,
         missing,
+        rejected,
         reason: entry ? entry.reason || null : null
       });
       totalAccepted += accepted;
       totalDamaged += damaged;
       totalMissing += missing;
+      totalRejected += rejected;
     }
 
     if (lines.length === 0) {
@@ -194,6 +204,7 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
             note ||
             `Accepted from LG warehouse (${dispatch.dispatch_number})` +
               (line.missing > 0 ? `, ${line.missing} missing` : '') +
+              (line.rejected > 0 ? `, ${line.rejected} rejected` : '') +
               (line.damaged > 0 ? `, ${line.damaged} damaged` : ''),
           actorId: actor.id,
           actorName: actor.fullName,
@@ -227,10 +238,11 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
         acceptedQuantity: line.accepted,
         damagedQuantity: line.damaged,
         missingQuantity: line.missing,
+        rejectedQuantity: line.rejected,
         reason: line.reason
       });
 
-      if (line.missing + line.damaged > 0) {
+      if (line.missing > 0 || line.rejected > 0) {
         await repository.openDispatchItemDiscrepancy(client, line.item.id);
       }
 
@@ -291,7 +303,8 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
             Number(item.quantity) -
               Number(item.accepted_quantity || 0) -
               Number(item.damaged_quantity || 0) -
-              Number(item.missing_quantity || 0)
+              Number(item.missing_quantity || 0) -
+              Number(item.rejected_quantity || 0)
           ),
         0
       )
@@ -305,6 +318,9 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
     const cumulativeMissing = roundQuantity(
       updatedItems.reduce((sum, item) => sum + Number(item.missing_quantity || 0), 0)
     );
+    const cumulativeRejected = roundQuantity(
+      updatedItems.reduce((sum, item) => sum + Number(item.rejected_quantity || 0), 0)
+    );
     const status = remainingQuantity > 0.0005 ? 'partially_received' : 'received';
 
     await repository.insertDispatchReceipt(client, {
@@ -317,7 +333,8 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       actorName: actor.fullName,
       acceptedQuantity: roundQuantity(totalAccepted),
       damagedQuantity: roundQuantity(totalDamaged),
-      missingQuantity: roundQuantity(totalMissing)
+      missingQuantity: roundQuantity(totalMissing),
+      rejectedQuantity: roundQuantity(totalRejected)
     });
 
     await repository.markDispatchAccounted(client, {
@@ -328,7 +345,8 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       note,
       acceptedQuantity: cumulativeAccepted,
       damagedQuantity: cumulativeDamaged,
-      missingQuantity: cumulativeMissing
+      missingQuantity: cumulativeMissing,
+      rejectedQuantity: cumulativeRejected
     });
 
     const requisitionItems = await repository.listRequisitionItems(dispatch.requisition_id);
@@ -336,7 +354,7 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       (item) =>
         Number(item.accepted_quantity) + Number(item.closed_short_quantity || 0) >= Number(item.approved_quantity) - QUANTITY_EPSILON
     );
-    const discrepanciesOpened = lines.filter((line) => line.missing + line.damaged > 0).length;
+    const discrepanciesOpened = lines.filter((line) => line.missing > 0 || line.rejected > 0).length;
     const damagedQuarantined = roundQuantity(totalDamaged);
 
     if (settled) {
@@ -348,12 +366,15 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
 
     await repository.insertRequisitionEvent(client, {
       requisitionId: dispatch.requisition_id,
-      eventType: totalDamaged > 0 || totalMissing > 0 ? 'received_with_discrepancy' : 'received',
+      eventType:
+        totalDamaged > 0 || totalMissing > 0 || totalRejected > 0
+          ? 'received_with_discrepancy'
+          : 'received',
       actorId: actor.id,
       actorName: actor.fullName,
       comment:
         note ||
-        `Delivery ${dispatch.dispatch_number} confirmed (${roundQuantity(totalAccepted)} accepted, ${roundQuantity(totalDamaged)} damaged, ${roundQuantity(totalMissing)} missing)`
+        `Delivery ${dispatch.dispatch_number} confirmed (${roundQuantity(totalAccepted)} accepted, ${roundQuantity(totalDamaged)} damaged, ${roundQuantity(totalMissing)} missing, ${roundQuantity(totalRejected)} rejected)`
     });
 
     await recordAudit(client, {
@@ -363,7 +384,7 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       actorRoleCode: scope.roleCode,
       actorScopeType: scope.scopeType,
       action:
-        totalDamaged > 0 || totalMissing > 0
+        totalDamaged > 0 || totalMissing > 0 || totalRejected > 0
           ? 'delivery.received_with_discrepancy'
           : 'delivery.received',
       entityType: 'lg_dispatch',
@@ -373,6 +394,7 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
         acceptedQuantity: roundQuantity(totalAccepted),
         damagedQuantity: roundQuantity(totalDamaged),
         missingQuantity: roundQuantity(totalMissing),
+        rejectedQuantity: roundQuantity(totalRejected),
         remainingQuantity,
         status
       }
@@ -383,7 +405,7 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       excludeUserId: actor.id,
       type: NOTIFICATION_TYPES.DELIVERY_RECEIVED,
       title: 'Delivery confirmed',
-      message: `${dispatch.dispatch_number} to ${scope.centreName || 'the facility'} was confirmed (${roundQuantity(totalAccepted)} accepted, ${roundQuantity(totalDamaged)} damaged, ${roundQuantity(totalMissing)} missing)`,
+      message: `${dispatch.dispatch_number} to ${scope.centreName || 'the facility'} was confirmed (${roundQuantity(totalAccepted)} accepted, ${roundQuantity(totalDamaged)} damaged, ${roundQuantity(totalMissing)} missing, ${roundQuantity(totalRejected)} rejected)`,
       entityType: 'lg_dispatch',
       entityId: dispatch.id
     });
@@ -407,6 +429,7 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       acceptedQuantity: roundQuantity(totalAccepted),
       damagedQuantity: roundQuantity(totalDamaged),
       missingQuantity: roundQuantity(totalMissing),
+      rejectedQuantity: roundQuantity(totalRejected),
       remainingQuantity,
       discrepanciesOpened,
       damagedQuarantined,

@@ -76,6 +76,14 @@ router.get(
 );
 
 router.get(
+  '/reports/damage',
+  authenticate,
+  authorize(PERMISSIONS.REPORTS_VIEW),
+  validate({ query: schemas.reportQuerySchema }),
+  controller.damage
+);
+
+router.get(
   '/reports/audit',
   authenticate,
   authorize(PERMISSIONS.AUDIT_VIEW),

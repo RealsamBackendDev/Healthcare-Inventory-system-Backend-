@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { withTransaction } = require('../../database/connection');
 const { ConflictError, ForbiddenError, NotFoundError, ValidationError } = require('../../shared/errors/AppError');
-const { roundQuantity, isPositive } = require('../../shared/utils/numbers');
+const { roundQuantity, isPositive, isCountableUnit, isWholeQuantity } = require('../../shared/utils/numbers');
 const { parseDateInput, todayIsoDate } = require('../../shared/utils/date');
 const { recordAudit } = require('../../shared/utils/audit');
 const { getPagination, buildPaginationMeta } = require('../../shared/utils/pagination');
@@ -162,6 +162,12 @@ const validateItems = async (client, healthcareCentreId, items, fieldName = 'ite
         { field: `${fieldName}.${index}.requestedQuantity`, message: 'Enter a quantity greater than zero' }
       ]);
     }
+      if (isCountableUnit(drug.unit_of_measure) && !isWholeQuantity(item.requestedQuantity)) {
+        throw new ValidationError(
+          `${drug.name} is counted in ${drug.unit_of_measure || 'units'}, so the quantity must be a whole number`,
+          [{ field: `${fieldName}.${index}.requestedQuantity`, message: 'Enter a whole number' }]
+        );
+      }
   });
 
   return merged;

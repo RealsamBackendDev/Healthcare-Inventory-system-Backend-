@@ -11,6 +11,15 @@ const authorize = (...requiredPermissions) => (req, res, next) => {
   return next();
 };
 
+const requireLocalGovernmentScope = (req, res, next) => {
+  if (!req.scope || req.scope.scopeType !== 'local_government') {
+    return next(
+      new ForbiddenError('This screen is only available to local government accounts', 'LOCAL_GOVERNMENT_ONLY')
+    );
+  }
+  return next();
+};
+
 const requireRole = (...roles) => (req, res, next) => {
   if (!req.scope || !roles.includes(req.scope.roleCode)) {
     return next(new ForbiddenError('You do not have permission to perform this action', 'ROLE_DENIED'));
@@ -20,5 +29,6 @@ const requireRole = (...roles) => (req, res, next) => {
 
 module.exports = {
   authorize,
-  requireRole
+  requireRole,
+  requireLocalGovernmentScope
 };

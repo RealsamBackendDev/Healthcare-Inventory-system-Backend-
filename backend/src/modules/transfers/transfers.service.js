@@ -6,7 +6,7 @@ const {
   NotFoundError,
   ValidationError
 } = require('../../shared/errors/AppError');
-const { roundQuantity, isPositive } = require('../../shared/utils/numbers');
+const { roundQuantity, isPositive, isCountableUnit, isWholeQuantity } = require('../../shared/utils/numbers');
 const { todayIsoDate } = require('../../shared/utils/date');
 const { recordAudit } = require('../../shared/utils/audit');
 const { QUANTITY_EPSILON } = require('../../shared/constants');
@@ -68,13 +68,15 @@ const mapTransferLine = (row) => ({
   acceptedQuantity: roundQuantity(Number(row.accepted_quantity || 0)),
   damagedQuantity: roundQuantity(Number(row.damaged_quantity || 0)),
   missingQuantity: roundQuantity(Number(row.missing_quantity || 0)),
+  rejectedQuantity: roundQuantity(Number(row.rejected_quantity || 0)),
   pendingQuantity: roundQuantity(
     Math.max(
       0,
       Number(row.quantity) -
         Number(row.accepted_quantity || 0) -
         Number(row.damaged_quantity || 0) -
-        Number(row.missing_quantity || 0)
+        Number(row.missing_quantity || 0) -
+        Number(row.rejected_quantity || 0)
     )
   ),
   discrepancyStatus: row.discrepancy_status || 'none',
@@ -93,6 +95,7 @@ const mapReceipt = (row) => ({
   acceptedQuantity: roundQuantity(Number(row.accepted_quantity || 0)),
   damagedQuantity: roundQuantity(Number(row.damaged_quantity || 0)),
   missingQuantity: roundQuantity(Number(row.missing_quantity || 0)),
+  rejectedQuantity: roundQuantity(Number(row.rejected_quantity || 0)),
   receivedByName: row.received_by_name,
   receivedAt: row.received_at
 });
@@ -211,6 +214,16 @@ const createRequest = async ({ actor, scope, payload }) => {
     }
   }
 
+  payload.items.forEach((item, index) => {
+    const drug = drugsById.get(item.drugId);
+    if (drug && isCountableUnit(drug.unit_of_measure) && !isWholeQuantity(item.quantity)) {
+      throw new ValidationError(
+        `${drug.name} is counted in ${drug.unit_of_measure || 'units'}, so the quantity must be a whole number`,
+        [{ field: `items.${index}.quantity`, message: 'Enter a whole number' }]
+      );
+    }
+  });
+
   const totalQuantity = roundQuantity(
     [...wanted.values()].reduce((total, quantity) => total + quantity, 0)
   );
@@ -285,8 +298,19 @@ const getRequestDetail = async ({ scope, requestId }) => {
   };
 };
 
-const approveRequest = async ({ actor, scope, requestId, note }) => {
+const approveRequest = async ({ actor, scope, requestId, note, clientRequestId }) => {
   const healthcareCentreId = requireFacilityScope(scope);
+
+  if (clientRequestId) {
+    const replay = await repository.findDecisionReplay({
+      transferId: requestId,
+      healthcareCentreId,
+      idempotencyKey: clientRequestId
+    });
+    if (replay) {
+      return getRequestDetail({ scope, requestId });
+    }
+  }
 
   await withTransaction(async (client) => {
     const locked = await repository.lockRequest(client, requestId);
@@ -396,7 +420,8 @@ const approveRequest = async ({ actor, scope, requestId, note }) => {
       totalQuantity,
       actorId: actor.id,
       actorName: actor.fullName,
-      note
+      note,
+      idempotencyKey: clientRequestId || null
     });
 
     await recordAudit(client, {
@@ -416,8 +441,19 @@ const approveRequest = async ({ actor, scope, requestId, note }) => {
   return getRequestDetail({ scope, requestId });
 };
 
-const declineRequest = async ({ actor, scope, requestId, reason }) => {
+const declineRequest = async ({ actor, scope, requestId, reason, clientRequestId }) => {
   const healthcareCentreId = requireFacilityScope(scope);
+
+  if (clientRequestId) {
+    const replay = await repository.findDecisionReplay({
+      transferId: requestId,
+      healthcareCentreId,
+      idempotencyKey: clientRequestId
+    });
+    if (replay) {
+      return getRequestDetail({ scope, requestId });
+    }
+  }
 
   await withTransaction(async (client) => {
     const locked = await repository.lockRequest(client, requestId);
@@ -432,7 +468,8 @@ const declineRequest = async ({ actor, scope, requestId, reason }) => {
       transferId: requestId,
       actorId: actor.id,
       actorName: actor.fullName,
-      note: reason
+      note: reason,
+      idempotencyKey: clientRequestId || null
     });
 
     await recordAudit(client, {
@@ -452,24 +489,38 @@ const declineRequest = async ({ actor, scope, requestId, reason }) => {
   return getRequestDetail({ scope, requestId });
 };
 
-const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
+const receiveRequest = async ({ actor, scope, requestId, note, items, clientRequestId }) => {
   const healthcareCentreId = requireFacilityScope(scope);
+
+  if (clientRequestId) {
+    const replay = await repository.findReceiptByKey({
+      transferId: requestId,
+      idempotencyKey: clientRequestId
+    });
+    if (replay) {
+      return getRequestDetail({ scope, requestId });
+    }
+  }
 
   if (Array.isArray(items) && items.length > 0) {
     items.forEach((entry, index) => {
-      ['acceptedQuantity', 'damagedQuantity', 'missingQuantity'].forEach((key) => {
-        const raw = entry[key];
-        const value = Number(raw === undefined || raw === null || raw === '' ? 0 : raw);
-        if (!Number.isFinite(value) || value < 0) {
-          throw new ValidationError('Received quantities cannot be negative', [
-            { field: `items.${index}.${key}`, message: 'Enter zero or more' }
-          ]);
+      ['acceptedQuantity', 'damagedQuantity', 'missingQuantity', 'rejectedQuantity'].forEach(
+        (key) => {
+          const raw = entry[key];
+          const value = Number(raw === undefined || raw === null || raw === '' ? 0 : raw);
+          if (!Number.isFinite(value) || value < 0) {
+            throw new ValidationError('Received quantities cannot be negative', [
+              { field: `items.${index}.${key}`, message: 'Enter zero or more' }
+            ]);
+          }
         }
-      });
+      );
     });
   }
 
-  const result = await withTransaction(async (client) => {
+  let result;
+  try {
+    result = await withTransaction(async (client) => {
     const locked = await repository.lockRequest(client, requestId);
     if (!locked || locked.to_healthcare_centre_id !== healthcareCentreId) {
       throw new NotFoundError('Transfer request was not found for this facility');
@@ -508,13 +559,15 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
     let totalAccepted = 0;
     let totalDamaged = 0;
     let totalMissing = 0;
+    let totalRejected = 0;
 
     for (const line of lines) {
       const allocated = roundQuantity(Number(line.quantity));
       const alreadyRecorded = roundQuantity(
         Number(line.accepted_quantity || 0) +
           Number(line.damaged_quantity || 0) +
-          Number(line.missing_quantity || 0)
+          Number(line.missing_quantity || 0) +
+          Number(line.rejected_quantity || 0)
       );
       const outstanding = roundQuantity(Math.max(0, allocated - alreadyRecorded));
       const entry = supplied ? supplied.get(line.id) : null;
@@ -523,7 +576,8 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
         : outstanding;
       const damaged = supplied ? roundQuantity(Number((entry && entry.damagedQuantity) || 0)) : 0;
       const missing = supplied ? roundQuantity(Number((entry && entry.missingQuantity) || 0)) : 0;
-      const counted = roundQuantity(accepted + damaged + missing);
+      const rejected = supplied ? roundQuantity(Number((entry && entry.rejectedQuantity) || 0)) : 0;
+      const counted = roundQuantity(accepted + damaged + missing + rejected);
 
       if (counted > outstanding + QUANTITY_EPSILON) {
         throw new ValidationError(
@@ -541,11 +595,13 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
         accepted,
         damaged,
         missing,
+        rejected,
         reason: entry ? entry.reason || null : null
       });
       totalAccepted += accepted;
       totalDamaged += damaged;
       totalMissing += missing;
+      totalRejected += rejected;
     }
 
     if (received.length === 0) {
@@ -651,10 +707,11 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
         lineId: line.id,
         acceptedQuantity: entry.accepted,
         damagedQuantity: entry.damaged,
-        missingQuantity: entry.missing
+        missingQuantity: entry.missing,
+        rejectedQuantity: entry.rejected
       });
 
-      if (entry.missing > 0) {
+      if (entry.missing > 0 || entry.rejected > 0) {
         await repository.openTransferLineDiscrepancy(client, {
           lineId: line.id,
           reason: entry.reason
@@ -670,8 +727,10 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
       acceptedQuantity: roundQuantity(totalAccepted),
       damagedQuantity: roundQuantity(totalDamaged),
       missingQuantity: roundQuantity(totalMissing),
+      rejectedQuantity: roundQuantity(totalRejected),
       actorId: actor.id,
-      actorName: actor.fullName
+      actorName: actor.fullName,
+      idempotencyKey: clientRequestId || null
     });
 
     for (const entry of received) {
@@ -682,6 +741,7 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
         acceptedQuantity: entry.accepted,
         damagedQuantity: entry.damaged,
         missingQuantity: entry.missing,
+        rejectedQuantity: entry.rejected,
         reason: entry.reason
       });
     }
@@ -696,7 +756,8 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
             Number(line.quantity) -
               Number(line.accepted_quantity || 0) -
               Number(line.damaged_quantity || 0) -
-              Number(line.missing_quantity || 0)
+              Number(line.missing_quantity || 0) -
+              Number(line.rejected_quantity || 0)
           ),
         0
       )
@@ -726,7 +787,7 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
       actorRoleCode: scope.roleCode,
       actorScopeType: scope.scopeType,
       action:
-        totalDamaged > 0 || totalMissing > 0
+        totalDamaged > 0 || totalMissing > 0 || totalRejected > 0
           ? 'facility_transfer.received_with_discrepancy'
           : 'facility_transfer.received',
       entityType: 'facility_transfer',
@@ -737,6 +798,7 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
         acceptedQuantity: roundQuantity(totalAccepted),
         damagedQuantity: roundQuantity(totalDamaged),
         missingQuantity: roundQuantity(totalMissing),
+        rejectedQuantity: roundQuantity(totalRejected),
         remainingQuantity,
         status
       }
@@ -748,10 +810,25 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
       acceptedQuantity: roundQuantity(totalAccepted),
       damagedQuantity: roundQuantity(totalDamaged),
       missingQuantity: roundQuantity(totalMissing),
+      rejectedQuantity: roundQuantity(totalRejected),
       remainingQuantity,
-      discrepanciesOpened: received.filter((entry) => entry.damaged + entry.missing > 0).length
+      discrepanciesOpened: received.filter(
+        (entry) => entry.damaged + entry.missing + entry.rejected > 0
+      ).length
     };
-  });
+    });
+  } catch (error) {
+    if (clientRequestId && error.code === '23505') {
+      const existing = await repository.findReceiptByKey({
+        transferId: requestId,
+        idempotencyKey: clientRequestId
+      });
+      if (existing) {
+        return getRequestDetail({ scope, requestId });
+      }
+    }
+    throw error;
+  }
 
   const detail = await getRequestDetail({ scope, requestId });
   return {
@@ -762,6 +839,7 @@ const receiveRequest = async ({ actor, scope, requestId, note, items }) => {
       acceptedQuantity: result.acceptedQuantity,
       damagedQuantity: result.damagedQuantity,
       missingQuantity: result.missingQuantity,
+      rejectedQuantity: result.rejectedQuantity,
       remainingQuantity: result.remainingQuantity,
       discrepanciesOpened: result.discrepanciesOpened
     }
@@ -786,19 +864,24 @@ const resolveShortage = async ({ actor, scope, requestId, lineId, resolution, no
     }
 
     const missing = roundQuantity(Number(line.missing_quantity || 0));
-    if (!isPositive(missing)) {
-      throw new ConflictError('This line has nothing missing to resolve', 'NO_OPEN_SHORTAGE');
+    const rejected = roundQuantity(Number(line.rejected_quantity || 0));
+    const outstanding = roundQuantity(missing + rejected);
+    if (!isPositive(outstanding)) {
+      throw new ConflictError(
+        'This line has nothing missing or rejected to resolve',
+        'NO_OPEN_SHORTAGE'
+      );
     }
 
     const released = await transitRepository.releaseTransitQuantity(client, {
       transitBatchId: line.transit_batch_id,
       drugId: line.drug_id,
-      quantity: missing,
+      quantity: outstanding,
       movementType: 'write_off',
       reason:
         resolution === 'reissue'
-          ? `Shortage of ${missing} ${line.name} on ${locked.transfer_number} written off, replacement owed`
-          : `Shortage of ${missing} ${line.name} on ${locked.transfer_number} written off - ${note}`,
+          ? `${missing} missing and ${rejected} rejected ${line.name} on ${locked.transfer_number} written off, replacement owed`
+          : `${missing} missing and ${rejected} rejected ${line.name} on ${locked.transfer_number} written off - ${note}`,
       actorId: actor.id,
       actorName: actor.fullName,
       sourceReference: locked.transfer_number
@@ -821,15 +904,15 @@ const resolveShortage = async ({ actor, scope, requestId, lineId, resolution, no
         toCentreName: locked.to_centre_name,
         notes: `Replacement for shortage on ${locked.transfer_number}`,
         itemCount: 1,
-        totalQuantity: missing,
+        totalQuantity: outstanding,
         actorId: actor.id,
         actorName: actor.fullName,
-        requestNote: `Replacement for ${missing} ${line.name} missing on ${locked.transfer_number}`
+        requestNote: `Replacement for ${outstanding} ${line.name} on ${locked.transfer_number}`
       });
       await repository.insertRequestItem(client, {
         transferId: replacement.id,
         drugId: line.drug_id,
-        quantity: missing
+        quantity: outstanding
       });
     }
 
@@ -837,7 +920,7 @@ const resolveShortage = async ({ actor, scope, requestId, lineId, resolution, no
       lineId,
       resolution,
       note,
-      replacementQuantity: replacement ? missing : 0,
+      replacementQuantity: replacement ? outstanding : 0,
       replacementTransferId: replacement ? replacement.id : null,
       actorId: actor.id,
       actorName: actor.fullName
@@ -854,12 +937,13 @@ const resolveShortage = async ({ actor, scope, requestId, lineId, resolution, no
       entityId: lineId,
       summary:
         resolution === 'reissue'
-          ? `Requested a replacement of ${missing} ${line.name} from ${locked.from_centre_name}`
-          : `Wrote off ${missing} ${line.name} missing on ${locked.transfer_number}`,
+          ? `Requested a replacement of ${outstanding} ${line.name} from ${locked.from_centre_name}`
+          : `Wrote off ${outstanding} ${line.name} on ${locked.transfer_number}`,
       newValues: {
         resolution,
         note,
         missingQuantity: missing,
+        rejectedQuantity: rejected,
         replacementTransferId: replacement ? replacement.id : null
       }
     });
@@ -868,6 +952,8 @@ const resolveShortage = async ({ actor, scope, requestId, lineId, resolution, no
       lineId,
       drugName: line.name,
       missingQuantity: missing,
+      rejectedQuantity: rejected,
+      shortageQuantity: outstanding,
       resolution,
       replacementTransferId: replacement ? replacement.id : null,
       replacementTransferNumber: replacement ? replacement.transfer_number : null

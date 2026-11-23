@@ -7,7 +7,7 @@ const getActiveCentre = asyncHandler(async (req, res) => {
 });
 
 const getStructure = asyncHandler(async (req, res) => {
-  const result = await service.getStructure();
+  const result = await service.getStructure(req.scope);
   res.json({ success: true, data: result });
 });
 

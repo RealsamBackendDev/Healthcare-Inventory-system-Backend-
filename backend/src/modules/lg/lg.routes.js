@@ -1,6 +1,6 @@
 const express = require('express');
 const authenticate = require('../../middleware/authenticate');
-const { authorize } = require('../../middleware/authorize');
+const { authorize, requireLocalGovernmentScope } = require('../../middleware/authorize');
 const validate = require('../../middleware/validate');
 const { PERMISSIONS } = require('../../shared/constants');
 const controller = require('./lg.controller');
@@ -8,33 +8,31 @@ const schemas = require('./lg.validation');
 
 const router = express.Router();
 
+router.use(authenticate, requireLocalGovernmentScope);
+
 router.get(
   '/warehouse',
-  authenticate,
-  authorize(PERMISSIONS.INVENTORY_VIEW),
+  authorize(PERMISSIONS.LG_WAREHOUSE_VIEW),
   validate({ query: schemas.warehouseQuerySchema }),
   controller.getWarehouse
 );
 
 router.get(
   '/warehouse/batches',
-  authenticate,
-  authorize(PERMISSIONS.INVENTORY_VIEW),
+  authorize(PERMISSIONS.LG_WAREHOUSE_VIEW),
   validate({ query: schemas.warehouseQuerySchema }),
   controller.getWarehouseBatches
 );
 
 router.get(
   '/warehouse/movements',
-  authenticate,
-  authorize(PERMISSIONS.INVENTORY_VIEW),
+  authorize(PERMISSIONS.LG_WAREHOUSE_VIEW),
   validate({ query: schemas.warehouseMovementsQuerySchema }),
   controller.listWarehouseMovements
 );
 
 router.get(
   '/ledger/reconciliation',
-  authenticate,
   authorize(PERMISSIONS.LG_REPORTS_VIEW),
   validate({ query: schemas.listLimitQuerySchema }),
   controller.getLedgerReconciliation
@@ -42,15 +40,13 @@ router.get(
 
 router.get(
   '/warehouse/receipts',
-  authenticate,
-  authorize(PERMISSIONS.INVENTORY_VIEW),
+  authorize(PERMISSIONS.LG_WAREHOUSE_VIEW),
   validate({ query: schemas.listLimitQuerySchema }),
   controller.listReceipts
 );
 
 router.post(
   '/warehouse/receipts',
-  authenticate,
   authorize(PERMISSIONS.WAREHOUSE_RECEIVE),
   validate({ body: schemas.createReceiptSchema }),
   controller.createReceipt
@@ -58,7 +54,6 @@ router.post(
 
 router.get(
   '/requisitions',
-  authenticate,
   authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
   validate({ query: schemas.listRequisitionsQuerySchema }),
   controller.listRequisitions
@@ -66,7 +61,6 @@ router.get(
 
 router.get(
   '/requisitions/:requisitionId',
-  authenticate,
   authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
   validate({ params: schemas.requisitionIdParamSchema }),
   controller.getRequisition
@@ -74,7 +68,6 @@ router.get(
 
 router.post(
   '/requisitions/:requisitionId/approve',
-  authenticate,
   authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
   validate({ params: schemas.requisitionIdParamSchema, body: schemas.approveRequisitionSchema }),
   controller.approveRequisition
@@ -82,7 +75,6 @@ router.post(
 
 router.post(
   '/requisitions/:requisitionId/reject',
-  authenticate,
   authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
   validate({ params: schemas.requisitionIdParamSchema, body: schemas.rejectRequisitionSchema }),
   controller.rejectRequisition
@@ -90,7 +82,6 @@ router.post(
 
 router.post(
   '/requisitions/:requisitionId/dispatch',
-  authenticate,
   authorize(PERMISSIONS.DISPATCHES_POST),
   validate({ params: schemas.requisitionIdParamSchema, body: schemas.dispatchSchema }),
   controller.dispatchRequisition
@@ -98,7 +89,6 @@ router.post(
 
 router.post(
   '/discrepancies/:itemId/resolve',
-  authenticate,
   authorize(PERMISSIONS.DISCREPANCIES_CLOSE),
   validate({ params: schemas.discrepancyIdParamSchema, body: schemas.resolveDiscrepancySchema }),
   controller.resolveDiscrepancy
@@ -106,7 +96,6 @@ router.post(
 
 router.post(
   '/requisitions/:requisitionId/close-short',
-  authenticate,
   authorize(PERMISSIONS.DISCREPANCIES_CLOSE),
   validate({ params: schemas.requisitionIdParamSchema, body: schemas.closeShortSchema }),
   controller.closeShort
@@ -114,109 +103,95 @@ router.post(
 
 router.get(
   '/dispatches',
-  authenticate,
-  authorize(PERMISSIONS.INVENTORY_VIEW),
+  authorize(PERMISSIONS.LG_WAREHOUSE_VIEW),
   validate({ query: schemas.listLimitQuerySchema }),
   controller.listDispatches
 );
 
 router.get(
   '/transfers',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_TRANSFERS_MANAGE),
   validate({ query: schemas.listFacilityTransfersQuerySchema }),
   controller.listTransfers
 );
 
 router.get(
   '/transfers/facilities',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_TRANSFERS_MANAGE),
   controller.listTransferFacilities
 );
 
 router.get(
   '/transfers/facilities/stock',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_TRANSFERS_MANAGE),
   validate({ query: schemas.facilityStockQuerySchema }),
   controller.getFacilityStock
 );
 
 router.post(
   '/transfers',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_TRANSFERS_MANAGE),
   validate({ body: schemas.createFacilityTransferSchema }),
   controller.createTransfer
 );
 
 router.get(
   '/transfers/:transferId',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_TRANSFERS_MANAGE),
   validate({ params: schemas.transferIdParamSchema }),
   controller.getTransfer
 );
 
 router.post(
   '/transfers/:transferId/cancel',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_TRANSFERS_MANAGE),
   validate({ params: schemas.transferIdParamSchema, body: schemas.cancelTransferSchema }),
   controller.cancelTransfer
 );
 
 router.get(
   '/orders',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_ORDERS_MANAGE),
   validate({ query: schemas.listOrdersQuerySchema }),
   controller.listOrders
 );
 
 router.get(
   '/orders/candidates',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_ORDERS_MANAGE),
   controller.listOrderCandidates
 );
 
 router.post(
   '/orders',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_ORDERS_MANAGE),
   validate({ body: schemas.createOrderSchema }),
   controller.createOrder
 );
 
 router.get(
   '/orders/:orderId',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_ORDERS_MANAGE),
   validate({ params: schemas.orderIdParamSchema }),
   controller.getOrder
 );
 
 router.post(
   '/orders/:orderId/submit',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_ORDERS_MANAGE),
   validate({ params: schemas.orderIdParamSchema }),
   controller.submitOrder
 );
 
 router.post(
   '/orders/:orderId/fulfill',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_ORDERS_MANAGE),
   validate({ params: schemas.orderIdParamSchema, body: schemas.fulfillOrderSchema }),
   controller.fulfillOrder
 );
 
 router.post(
   '/orders/:orderId/receipts',
-  authenticate,
   authorize(PERMISSIONS.WAREHOUSE_RECEIVE),
   validate({ params: schemas.orderIdParamSchema, body: schemas.orderReceiptSchema }),
   controller.receiveOrder
@@ -224,70 +199,61 @@ router.post(
 
 router.post(
   '/orders/:orderId/cancel',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_ORDERS_MANAGE),
   validate({ params: schemas.orderIdParamSchema, body: schemas.cancelOrderSchema }),
   controller.cancelOrder
 );
 
 router.get(
   '/consolidations',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_CONSOLIDATIONS_MANAGE),
   validate({ query: schemas.listConsolidationsQuerySchema }),
   controller.listConsolidations
 );
 
 router.get(
   '/consolidations/candidates',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_CONSOLIDATIONS_MANAGE),
   controller.getConsolidationCandidates
 );
 
 router.post(
   '/consolidations/preview',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_CONSOLIDATIONS_MANAGE),
   validate({ body: schemas.previewConsolidationSchema }),
   controller.previewConsolidation
 );
 
 router.post(
   '/consolidations',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_CONSOLIDATIONS_MANAGE),
   validate({ body: schemas.createConsolidationSchema }),
   controller.createConsolidation
 );
 
 router.get(
   '/consolidations/:consolidationId',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_CONSOLIDATIONS_MANAGE),
   validate({ params: schemas.consolidationIdParamSchema }),
   controller.getConsolidation
 );
 
 router.post(
   '/consolidations/:consolidationId/finalize',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_CONSOLIDATIONS_MANAGE),
   validate({ params: schemas.consolidationIdParamSchema }),
   controller.finalizeConsolidation
 );
 
 router.post(
   '/consolidations/:consolidationId/cancel',
-  authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_LG_REVIEW),
+  authorize(PERMISSIONS.LG_CONSOLIDATIONS_MANAGE),
   validate({ params: schemas.consolidationIdParamSchema }),
   controller.cancelConsolidation
 );
 
 router.get(
   '/approvals',
-  authenticate,
   authorize(PERMISSIONS.THRESHOLDS_APPROVE),
   validate({ query: schemas.listApprovalsQuerySchema }),
   controller.listApprovals
@@ -295,7 +261,6 @@ router.get(
 
 router.post(
   '/approvals/:approvalId/approve',
-  authenticate,
   authorize(PERMISSIONS.THRESHOLDS_APPROVE),
   validate({ params: schemas.approvalIdParamSchema, body: schemas.approveThresholdSchema }),
   controller.approveApproval
@@ -303,7 +268,6 @@ router.post(
 
 router.post(
   '/approvals/:approvalId/reject',
-  authenticate,
   authorize(PERMISSIONS.THRESHOLDS_APPROVE),
   validate({ params: schemas.approvalIdParamSchema, body: schemas.rejectThresholdSchema }),
   controller.rejectApproval
@@ -311,14 +275,12 @@ router.post(
 
 router.get(
   '/reports/summary',
-  authenticate,
   authorize(PERMISSIONS.LG_REPORTS_VIEW),
   controller.getReportsSummary
 );
 
 router.get(
   '/reports/demand',
-  authenticate,
   authorize(PERMISSIONS.LG_REPORTS_VIEW),
   validate({ query: schemas.reportQuerySchema }),
   controller.demandReport
@@ -326,7 +288,6 @@ router.get(
 
 router.get(
   '/reports/warehouse',
-  authenticate,
   authorize(PERMISSIONS.LG_REPORTS_VIEW),
   validate({ query: schemas.reportQuerySchema }),
   controller.warehouseReport
@@ -334,7 +295,6 @@ router.get(
 
 router.get(
   '/reports/dispatches',
-  authenticate,
   authorize(PERMISSIONS.LG_REPORTS_VIEW),
   validate({ query: schemas.reportQuerySchema }),
   controller.dispatchReport
@@ -342,16 +302,21 @@ router.get(
 
 router.get(
   '/reports/receipts',
-  authenticate,
   authorize(PERMISSIONS.LG_REPORTS_VIEW),
   validate({ query: schemas.reportQuerySchema }),
   controller.receiptReport
 );
 
 router.get(
+  '/reports/damage',
+  authorize(PERMISSIONS.LG_REPORTS_VIEW),
+  validate({ query: schemas.reportQuerySchema }),
+  controller.damageReport
+);
+
+router.get(
   '/dispatches/:dispatchId',
-  authenticate,
-  authorize(PERMISSIONS.INVENTORY_VIEW),
+  authorize(PERMISSIONS.LG_WAREHOUSE_VIEW),
   validate({ params: schemas.dispatchIdParamSchema }),
   controller.getDispatch
 );

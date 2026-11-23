@@ -44,7 +44,8 @@ const approveRequest = asyncHandler(async (req, res) => {
     actor: req.user,
     scope: req.scope,
     requestId: req.params.requestId,
-    note: req.body.note
+    note: req.body.note,
+    clientRequestId: req.body.clientRequestId
   });
   res.json({ success: true, data: result });
 });
@@ -54,7 +55,8 @@ const declineRequest = asyncHandler(async (req, res) => {
     actor: req.user,
     scope: req.scope,
     requestId: req.params.requestId,
-    reason: req.body.reason
+    reason: req.body.reason,
+    clientRequestId: req.body.clientRequestId
   });
   res.json({ success: true, data: result });
 });
@@ -65,7 +67,8 @@ const receiveRequest = asyncHandler(async (req, res) => {
     scope: req.scope,
     requestId: req.params.requestId,
     note: req.body.note,
-    items: req.body.items
+    items: req.body.items,
+    clientRequestId: req.body.clientRequestId
   });
   res.json({ success: true, data: result });
 });

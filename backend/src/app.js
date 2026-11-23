@@ -22,9 +22,12 @@ const reportsRoutes = require('./modules/reports/reports.routes');
 const notificationsRoutes = require('./modules/notifications/notifications.routes');
 const lgRoutes = require('./modules/lg/lg.routes');
 const lgAdminRoutes = require('./modules/lg/lg.admin');
+const lgDrugsRoutes = require('./modules/lg/lg.drugs');
 const lgAlertsRoutes = require('./modules/lg/alerts/lg.alerts.routes');
 
 const app = express();
+const damageRoutes = require('./modules/damage/damage.routes');
+const warehouseReturnsRoutes = require('./modules/warehouse-returns/warehouse-returns.routes');
 
 app.disable('x-powered-by');
 app.use(helmet());
@@ -96,12 +99,15 @@ app.use('/api', receivingRoutes);
 app.use('/api', dispensingRoutes);
 app.use('/api', adjustmentsRoutes);
 app.use('/api', transfersRoutes);
+app.use('/api', damageRoutes);
+app.use('/api', warehouseReturnsRoutes);
 app.use('/api', requisitionsRoutes);
 app.use('/api', expiryRoutes);
 app.use('/api', reportsRoutes);
 app.use('/api', notificationsRoutes);
 app.use('/api/lg', lgAlertsRoutes);
 app.use('/api/lg', lgAdminRoutes);
+app.use('/api/lg', lgDrugsRoutes);
 app.use('/api/lg', lgRoutes);
 
 app.use(notFoundHandler);

@@ -1,4 +1,5 @@
 const { query } = require('../../database/connection');
+const { ConflictError } = require('../../shared/errors/AppError');
 
 const findWarehouse = async (localGovernmentId) => {
   const { rows } = await query(
@@ -104,9 +105,16 @@ const insertWarehouseBatch = async (client, batch) => {
      VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, CURRENT_DATE)
      ON CONFLICT (stock_location_id, drug_id, batch_number)
      DO UPDATE SET quantity = batches.quantity + EXCLUDED.quantity,
+                   expiry_date = COALESCE(batches.expiry_date, EXCLUDED.expiry_date),
                    unit_cost = COALESCE(EXCLUDED.unit_cost, batches.unit_cost),
                    supplier_reference = COALESCE(EXCLUDED.supplier_reference, batches.supplier_reference),
                    updated_at = now()
+     WHERE (batches.expiry_date IS NULL
+            OR EXCLUDED.expiry_date IS NULL
+            OR batches.expiry_date = EXCLUDED.expiry_date)
+       AND (batches.unit_cost IS NULL
+            OR EXCLUDED.unit_cost IS NULL
+            OR batches.unit_cost = EXCLUDED.unit_cost)
      RETURNING id, batch_number, quantity`,
     [
       batch.localGovernmentId,
@@ -119,6 +127,12 @@ const insertWarehouseBatch = async (client, batch) => {
       batch.supplierReference || null
     ]
   );
+  if (rows.length === 0) {
+    throw new ConflictError(
+      `Batch ${batch.batchNumber} is already recorded at this warehouse with a different expiry date or unit cost. Use a separate batch number for this delivery, or match the expiry and cost of the existing lot.`,
+      'BATCH_LOT_MISMATCH'
+    );
+  }
   return rows[0];
 };
 
@@ -191,14 +205,17 @@ const listRequisitions = async ({ localGovernmentId, status, search, limit, offs
                 SUM(di.quantity) AS dispatched_quantity,
                 SUM(di.accepted_quantity) AS accepted_quantity,
                 SUM(di.missing_quantity) AS missing_quantity,
+                SUM(di.rejected_quantity) AS rejected_quantity,
                 SUM(di.damaged_quantity) AS damaged_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'resolved' AND di.discrepancy_resolution = 'written_off'
-                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
+                         THEN di.missing_quantity + di.rejected_quantity ELSE 0 END) AS written_off_quantity,
                 SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
-                         THEN di.quantity - di.accepted_quantity - di.damaged_quantity - di.missing_quantity
+                         THEN di.quantity - di.accepted_quantity - di.damaged_quantity
+                              - di.missing_quantity - di.rejected_quantity
                          ELSE 0 END) AS in_transit_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'open'
-                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS open_quantity
+                         THEN di.missing_quantity + di.rejected_quantity + di.damaged_quantity
+                         ELSE 0 END) AS open_quantity
            FROM lg_dispatch_items di
            JOIN lg_dispatches disp ON disp.id = di.dispatch_id
           WHERE disp.status <> 'cancelled'
@@ -262,6 +279,7 @@ const listRequisitionItems = async (requisitionId) => {
             COALESCE(agg.accepted_quantity, 0) AS accepted_quantity,
             COALESCE(agg.damaged_quantity, 0) AS damaged_quantity,
             COALESCE(agg.missing_quantity, 0) AS missing_quantity,
+            COALESCE(agg.rejected_quantity, 0) AS rejected_quantity,
             COALESCE(agg.written_off_quantity, 0) AS written_off_quantity,
             COALESCE(agg.open_quantity, 0) AS open_quantity,
             COALESCE(agg.in_transit_quantity, 0) AS in_transit_quantity
@@ -273,13 +291,16 @@ const listRequisitionItems = async (requisitionId) => {
                 SUM(di.accepted_quantity) AS accepted_quantity,
                 SUM(di.damaged_quantity) AS damaged_quantity,
                 SUM(di.missing_quantity) AS missing_quantity,
+                SUM(di.rejected_quantity) AS rejected_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'resolved' AND di.discrepancy_resolution = 'written_off'
-                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
+                         THEN di.missing_quantity + di.rejected_quantity ELSE 0 END) AS written_off_quantity,
                 SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
-                         THEN di.quantity - di.accepted_quantity - di.damaged_quantity - di.missing_quantity
+                         THEN di.quantity - di.accepted_quantity - di.damaged_quantity
+                              - di.missing_quantity - di.rejected_quantity
                          ELSE 0 END) AS in_transit_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'open'
-                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS open_quantity
+                         THEN di.missing_quantity + di.rejected_quantity + di.damaged_quantity
+                         ELSE 0 END) AS open_quantity
            FROM lg_dispatch_items di
            JOIN lg_dispatches disp ON disp.id = di.dispatch_id
           WHERE disp.status <> 'cancelled'
@@ -454,7 +475,7 @@ const listDispatchItems = async (dispatchId) => {
   const { rows } = await query(
     `SELECT di.id, di.drug_id, di.batch_id, di.batch_number, di.expiry_date, di.quantity, di.unit_cost,
             di.transit_batch_id, di.accepted_quantity, di.damaged_quantity, di.missing_quantity,
-            di.discrepancy_reason,
+            di.rejected_quantity, di.discrepancy_reason,
             di.discrepancy_status, di.discrepancy_resolution, di.discrepancy_note,
             d.code AS drug_code, d.name AS drug_name, d.unit_of_measure
        FROM lg_dispatch_items di
@@ -526,15 +547,19 @@ const listIncomingDispatches = async (healthcareCentreId) => {
     `SELECT d.id, d.dispatch_number, d.status, d.notes, d.dispatched_by_name, d.dispatched_at,
             d.requisition_id,
             COALESCE(items.item_count, 0) AS item_count,
-            COALESCE(items.total_quantity, 0) AS total_quantity
+            COALESCE(items.total_quantity, 0) AS total_quantity,
+            COALESCE(items.pending_quantity, 0) AS pending_quantity
        FROM lg_dispatches d
        LEFT JOIN (
-         SELECT dispatch_id, count(*)::int AS item_count, SUM(quantity) AS total_quantity
+         SELECT dispatch_id, count(*)::int AS item_count, SUM(quantity) AS total_quantity,
+                SUM(GREATEST(
+                      quantity - accepted_quantity - damaged_quantity - missing_quantity
+                        - rejected_quantity, 0)) AS pending_quantity
            FROM lg_dispatch_items
           GROUP BY dispatch_id
        ) items ON items.dispatch_id = d.id
       WHERE d.healthcare_centre_id = $1
-        AND d.status = 'dispatched'
+        AND d.status IN ('dispatched', 'partially_received')
       ORDER BY d.dispatched_at DESC`,
     [healthcareCentreId]
   );
@@ -545,9 +570,11 @@ const markDispatchAccounted = async (client, receipt) => {
   const { rows } = await client.query(
     `UPDATE lg_dispatches
         SET status = $2, received_by = $3, received_by_name = $4, received_at = now(),
-            received_note = $5, accepted_quantity = $6, damaged_quantity = $7, missing_quantity = $8
+            received_note = $5, accepted_quantity = $6, damaged_quantity = $7, missing_quantity = $8,
+            rejected_quantity = $9
       WHERE id = $1
-      RETURNING id, status, accepted_quantity, damaged_quantity, missing_quantity, received_at`,
+      RETURNING id, status, accepted_quantity, damaged_quantity, missing_quantity, rejected_quantity,
+                received_at`,
     [
       receipt.dispatchId,
       receipt.status,
@@ -556,7 +583,8 @@ const markDispatchAccounted = async (client, receipt) => {
       receipt.note || null,
       receipt.acceptedQuantity,
       receipt.damagedQuantity,
-      receipt.missingQuantity
+      receipt.missingQuantity,
+      receipt.rejectedQuantity || 0
     ]
   );
   return rows[0];
@@ -568,15 +596,17 @@ const updateDispatchItemReceipt = async (client, item) => {
         SET accepted_quantity = accepted_quantity + $2,
             damaged_quantity = damaged_quantity + $3,
             missing_quantity = missing_quantity + $4,
-            discrepancy_reason = COALESCE($5, discrepancy_reason)
+            rejected_quantity = rejected_quantity + $5,
+            discrepancy_reason = COALESCE($6, discrepancy_reason)
       WHERE id = $1
       RETURNING id, drug_id, batch_id, batch_number, expiry_date, quantity, unit_cost,
-                accepted_quantity, damaged_quantity, missing_quantity`,
+                accepted_quantity, damaged_quantity, missing_quantity, rejected_quantity`,
     [
       item.itemId,
       item.acceptedQuantity,
       item.damagedQuantity,
       item.missingQuantity,
+      item.rejectedQuantity,
       item.reason || null
     ]
   );
@@ -587,8 +617,9 @@ const insertDispatchReceipt = async (client, receipt) => {
   const { rows } = await client.query(
     `INSERT INTO lg_dispatch_receipts
        (local_government_id, healthcare_centre_id, dispatch_id, requisition_id, note,
-        received_by, received_by_name, accepted_quantity, damaged_quantity, missing_quantity)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        received_by, received_by_name, accepted_quantity, damaged_quantity, missing_quantity,
+        rejected_quantity)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       receipt.localGovernmentId,
@@ -600,7 +631,8 @@ const insertDispatchReceipt = async (client, receipt) => {
       receipt.actorName,
       receipt.acceptedQuantity || 0,
       receipt.damagedQuantity || 0,
-      receipt.missingQuantity || 0
+      receipt.missingQuantity || 0,
+      receipt.rejectedQuantity || 0
     ]
   );
   return rows[0];
@@ -629,6 +661,12 @@ const insertFacilityBatch = async (client, batch) => {
      DO UPDATE SET quantity = batches.quantity + EXCLUDED.quantity,
                    expiry_date = COALESCE(EXCLUDED.expiry_date, batches.expiry_date),
                    updated_at = now()
+     WHERE (batches.expiry_date IS NULL
+            OR EXCLUDED.expiry_date IS NULL
+            OR batches.expiry_date = EXCLUDED.expiry_date)
+       AND (batches.unit_cost IS NULL
+            OR EXCLUDED.unit_cost IS NULL
+            OR batches.unit_cost = EXCLUDED.unit_cost)
      RETURNING id, batch_number, quantity`,
     [
       batch.healthcareCentreId,
@@ -642,6 +680,12 @@ const insertFacilityBatch = async (client, batch) => {
       batch.supplierReference || null
     ]
   );
+  if (rows.length === 0) {
+    throw new ConflictError(
+      `Batch ${batch.batchNumber} is already recorded in this store with a different expiry date or unit cost. Please use a separate batch number or match the existing lot.`,
+      'BATCH_LOT_MISMATCH'
+    );
+  }
   return rows[0];
 };
 
@@ -913,6 +957,27 @@ const receiptReportRows = async ({ localGovernmentId, from, to }) => {
   return rows;
 };
 
+const damageReportRows = async ({ localGovernmentId, from, to }) => {
+  const { rows } = await query(
+    `SELECT dd.created_at, dd.quantity::float AS quantity, dd.disposition, dd.loss_bearer,
+            dd.replacement_owed, dd.agreed_with_name, dd.note, dd.recorded_by_name,
+            dd.return_status, dd.return_outcome, dd.return_received_at,
+            b.batch_number, b.unit_cost,
+            d.code AS drug_code, d.name AS drug_name, d.unit_of_measure,
+            hc.name AS centre_name, hc.code AS centre_code
+       FROM damage_dispositions dd
+       JOIN batches b ON b.id = dd.batch_id
+       JOIN drugs d ON d.id = dd.drug_id
+       JOIN healthcare_centres hc ON hc.id = dd.healthcare_centre_id
+      WHERE dd.local_government_id = $1
+        AND ($2::date IS NULL OR dd.created_at::date >= $2)
+        AND ($3::date IS NULL OR dd.created_at::date <= $3)
+      ORDER BY dd.created_at DESC`,
+    [localGovernmentId, from || null, to || null]
+  );
+  return rows;
+};
+
 const insertTransferMovement = async (client, movement) => {
   await client.query(
     `INSERT INTO stock_movements
@@ -1054,6 +1119,12 @@ const insertTransitBatch = async (client, batch) => {
      ON CONFLICT (stock_location_id, drug_id, batch_number)
      DO UPDATE SET quantity = batches.quantity + EXCLUDED.quantity,
                    updated_at = now()
+     WHERE (batches.expiry_date IS NULL
+            OR EXCLUDED.expiry_date IS NULL
+            OR batches.expiry_date = EXCLUDED.expiry_date)
+       AND (batches.unit_cost IS NULL
+            OR EXCLUDED.unit_cost IS NULL
+            OR batches.unit_cost = EXCLUDED.unit_cost)
      RETURNING id, batch_number, quantity`,
     [
       batch.localGovernmentId,
@@ -1066,6 +1137,12 @@ const insertTransitBatch = async (client, batch) => {
       batch.supplierReference || null
     ]
   );
+  if (rows.length === 0) {
+    throw new ConflictError(
+      `Batch ${batch.batchNumber} is already moving with a different expiry date or unit cost. Please refresh and try again.`,
+      'BATCH_LOT_MISMATCH'
+    );
+  }
   return rows[0];
 };
 
@@ -1130,6 +1207,12 @@ const insertQuarantineBatch = async (client, batch) => {
      ON CONFLICT (stock_location_id, drug_id, batch_number)
      DO UPDATE SET quantity = batches.quantity + EXCLUDED.quantity,
                    updated_at = now()
+     WHERE (batches.expiry_date IS NULL
+            OR EXCLUDED.expiry_date IS NULL
+            OR batches.expiry_date = EXCLUDED.expiry_date)
+       AND (batches.unit_cost IS NULL
+            OR EXCLUDED.unit_cost IS NULL
+            OR batches.unit_cost = EXCLUDED.unit_cost)
      RETURNING id, batch_number, quantity, status`,
     [
       batch.healthcareCentreId,
@@ -1143,6 +1226,12 @@ const insertQuarantineBatch = async (client, batch) => {
       batch.supplierReference || null
     ]
   );
+  if (rows.length === 0) {
+    throw new ConflictError(
+      `Quarantined batch ${batch.batchNumber} is already recorded with a different expiry date or unit cost. Please match the existing lot.`,
+      'BATCH_LOT_MISMATCH'
+    );
+  }
   return rows[0];
 };
 
@@ -1151,7 +1240,7 @@ const openDispatchItemDiscrepancy = async (client, itemId) => {
     `UPDATE lg_dispatch_items
         SET discrepancy_status = 'open'
       WHERE id = $1
-        AND missing_quantity > 0`,
+        AND (missing_quantity > 0 OR rejected_quantity > 0)`,
     [itemId]
   );
 };
@@ -1172,6 +1261,7 @@ const countOpenDiscrepancies = async (client, requisitionId) => {
 const listRequisitionDiscrepancies = async (requisitionId) => {
   const { rows } = await query(
     `SELECT di.id, di.dispatch_id, di.drug_id, di.quantity, di.missing_quantity,
+            di.rejected_quantity,
             di.discrepancy_status, di.discrepancy_resolution, di.discrepancy_reason,
             di.discrepancy_note, di.resolved_at, di.resolved_by_name,
             d.dispatch_number, dr.code AS drug_code, dr.name AS drug_name, dr.unit_of_measure
@@ -1189,8 +1279,8 @@ const listRequisitionDiscrepancies = async (requisitionId) => {
 
 const lockDiscrepancyItem = async (client, itemId, localGovernmentId) => {
   const { rows } = await client.query(
-    `SELECT di.id, di.dispatch_id, di.drug_id, di.missing_quantity, di.transit_batch_id,
-            di.discrepancy_status,
+    `SELECT di.id, di.dispatch_id, di.drug_id, di.missing_quantity, di.rejected_quantity,
+            di.transit_batch_id, di.discrepancy_status,
             d.requisition_id, d.healthcare_centre_id, d.dispatch_number,
             dr.name AS drug_name, dr.code AS drug_code
        FROM lg_dispatch_items di
@@ -1234,7 +1324,7 @@ const requisitionDiscrepancyBalances = async (client, requisitionId) => {
                 SUM(di.accepted_quantity) AS accepted_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'resolved'
                           AND di.discrepancy_resolution = 'written_off'
-                         THEN di.missing_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
+                         THEN di.missing_quantity + di.rejected_quantity ELSE 0 END) AS written_off_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'open' THEN 1 ELSE 0 END) AS open_count
            FROM lg_dispatch_items di
            JOIN lg_dispatches disp ON disp.id = di.dispatch_id
@@ -1908,6 +1998,7 @@ module.exports = {
   warehouseReportRows,
   dispatchReportRows,
   receiptReportRows,
+  damageReportRows,
   listConsolidationCandidates,
   findRequisitionsForConsolidation,
   findConsolidatedRequisitions,

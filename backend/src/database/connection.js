@@ -1,5 +1,7 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const config = require('../config/database');
+
+types.setTypeParser(1700, (value) => (value === null ? null : Number(value)));
 
 const pool = new Pool(config);
 

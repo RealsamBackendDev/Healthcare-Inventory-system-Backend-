@@ -7,6 +7,10 @@ const ROLES = {
 };
 
 const PERMISSIONS = {
+  LG_WAREHOUSE_VIEW: 'lg_warehouse.view',
+  LG_ORDERS_MANAGE: 'lg_orders.manage',
+  LG_CONSOLIDATIONS_MANAGE: 'lg_consolidations.manage',
+  LG_TRANSFERS_MANAGE: 'lg_transfers.manage',
   USERS_MANAGE: 'users.manage',
   DRUGS_VIEW: 'drugs.view',
   DRUGS_MANAGE: 'drugs.manage',
@@ -42,6 +46,10 @@ const PERMISSIONS = {
 };
 
 const PERMISSION_DEFINITIONS = [
+  { code: PERMISSIONS.LG_WAREHOUSE_VIEW, name: 'View LG warehouse', description: 'View local government warehouse stock, batches, movements, receipts and dispatches' },
+  { code: PERMISSIONS.LG_ORDERS_MANAGE, name: 'Manage distribution orders', description: 'Prepare, submit, fulfil and cancel local government distribution orders' },
+  { code: PERMISSIONS.LG_CONSOLIDATIONS_MANAGE, name: 'Manage consolidated demand', description: 'Build, preview, finalize and cancel consolidated demand' },
+  { code: PERMISSIONS.LG_TRANSFERS_MANAGE, name: 'Oversee facility transfers', description: 'View, create and cancel facility transfer requests at local government level' },
   { code: PERMISSIONS.USERS_MANAGE, name: 'Manage users', description: 'Create, deactivate, reactivate and reset users' },
   { code: PERMISSIONS.DRUGS_VIEW, name: 'View drugs', description: 'View the drug catalogue' },
   { code: PERMISSIONS.DRUGS_MANAGE, name: 'Manage drugs', description: 'Create, update, deactivate and reactivate drugs' },
@@ -80,8 +88,35 @@ const ROLE_DEFINITIONS = [
   {
     code: ROLES.ADMINISTRATOR,
     name: 'Administrator',
-    description: 'Full operational and administrative access to the healthcare centre',
-    permissions: Object.values(PERMISSIONS)
+    description: 'Administrative access to the healthcare centre, without local government or system-level rights',
+    permissions: [
+      PERMISSIONS.USERS_MANAGE,
+      PERMISSIONS.DRUGS_VIEW,
+      PERMISSIONS.DRUGS_MANAGE,
+      PERMISSIONS.INVENTORY_VIEW,
+      PERMISSIONS.STOCK_RECEIVE,
+      PERMISSIONS.STOCK_DISPENSE,
+      PERMISSIONS.STOCK_IMPORT,
+      PERMISSIONS.ADJUSTMENTS_CREATE,
+      PERMISSIONS.ADJUSTMENTS_APPROVE,
+      PERMISSIONS.RETURNS_REQUEST,
+      PERMISSIONS.RETURNS_APPROVE,
+      PERMISSIONS.REQUISITIONS_CREATE,
+      PERMISSIONS.REQUISITIONS_APPROVE,
+      PERMISSIONS.REQUISITIONS_SUBMIT,
+      PERMISSIONS.EXPIRY_VIEW,
+      PERMISSIONS.REPORTS_VIEW,
+      PERMISSIONS.AUDIT_VIEW,
+      PERMISSIONS.SETTINGS_MANAGE,
+      PERMISSIONS.NOTIFICATIONS_VIEW,
+      PERMISSIONS.DELIVERIES_RECEIVE,
+      PERMISSIONS.DISCREPANCIES_CLOSE,
+      PERMISSIONS.TRANSFERS_VIEW,
+      PERMISSIONS.TRANSFERS_REQUEST,
+      PERMISSIONS.TRANSFERS_APPROVE,
+      PERMISSIONS.TRANSFERS_RECEIVE,
+      PERMISSIONS.TRANSFERS_CANCEL
+    ]
   },
   {
     code: ROLES.STAFF,
@@ -130,6 +165,10 @@ const ROLE_DEFINITIONS = [
     name: 'Logistician',
     description: 'Reviews and approves LG requisitions and consolidations and runs warehouse and distribution operations',
     permissions: [
+      PERMISSIONS.LG_WAREHOUSE_VIEW,
+      PERMISSIONS.LG_ORDERS_MANAGE,
+      PERMISSIONS.LG_CONSOLIDATIONS_MANAGE,
+      PERMISSIONS.LG_TRANSFERS_MANAGE,
       PERMISSIONS.DRUGS_VIEW,
       PERMISSIONS.INVENTORY_VIEW,
       PERMISSIONS.EXPIRY_VIEW,
@@ -231,7 +270,8 @@ const NOTIFICATION_TYPES = {
   DELIVERY_RECEIVED: 'delivery_received',
   DISCREPANCY_OPENED: 'discrepancy_opened',
   ADJUSTMENT_PENDING: 'adjustment_pending',
-  RETURN_PENDING: 'return_pending'
+  RETURN_PENDING: 'return_pending',
+  RETURN_RECEIVED: 'return_received'
 };
 
 const STOCK_STATUS = {

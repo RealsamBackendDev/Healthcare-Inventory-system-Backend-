@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { withTransaction } = require('../../database/connection');
 const { InsufficientStockError, NotFoundError, ValidationError } = require('../../shared/errors/AppError');
-const { roundQuantity, subtractQuantity, hasSufficient, isPositive } = require('../../shared/utils/numbers');
+const { roundQuantity, subtractQuantity, hasSufficient, isPositive, isCountableUnit, isWholeQuantity } = require('../../shared/utils/numbers');
 const { getPagination, buildPaginationMeta } = require('../../shared/utils/pagination');
 const { parseDateInput, todayIsoDate } = require('../../shared/utils/date');
 const { recordAudit } = require('../../shared/utils/audit');
@@ -50,6 +50,12 @@ const dispense = async ({ actor, healthcareCentreId, payload }) => {
         throw new ValidationError('Inactive drugs cannot be dispensed', [
           { field: `items.${index}.drugId`, message: `${drug.name} is inactive` }
         ]);
+      }
+      if (isCountableUnit(drug.unit_of_measure) && !isWholeQuantity(item.quantity)) {
+        throw new ValidationError(
+          `${drug.name} is counted in ${drug.unit_of_measure || 'units'}, so the quantity must be a whole number`,
+          [{ field: `items.${index}.quantity`, message: 'Enter a whole number' }]
+        );
       }
     });
 

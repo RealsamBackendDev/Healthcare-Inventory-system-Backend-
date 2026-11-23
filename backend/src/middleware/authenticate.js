@@ -4,11 +4,14 @@ const { query } = require('../database/connection');
 const { AuthenticationError, ForbiddenError } = require('../shared/errors/AppError');
 
 const LOCAL_GOVERNMENT_PATHS = [
+  '/api/organisations/structure',
   '/api/lg',
   '/api/auth',
   '/api/organisations/lg',
   '/api/notifications'
 ];
+
+const LOCAL_GOVERNMENT_ONLY_PATHS = ['/api/lg'];
 
 const loadMemberships = async (userId) => {
   const { rows } = await query(
@@ -46,6 +49,9 @@ const isLocalGovernmentPath = (originalUrl) =>
   LOCAL_GOVERNMENT_PATHS.some((prefix) => (originalUrl || '').startsWith(prefix));
 
 const authenticate = async (req, res, next) => {
+  const isLocalGovernmentOnlyPath = (originalUrl) =>
+    LOCAL_GOVERNMENT_ONLY_PATHS.some((prefix) => (originalUrl || '').startsWith(prefix));
+
   try {
     const header = req.headers.authorization || '';
     const [scheme, token] = header.split(' ');
@@ -83,7 +89,13 @@ const authenticate = async (req, res, next) => {
     const requestedCentre = req.headers['x-healthcare-centre-id'];
     let membership;
 
-    if (requestedCentre) {
+    const localGovernmentMembership = memberships.find((item) => !item.healthcare_centre_id);
+    const preferLocalGovernment =
+      Boolean(localGovernmentMembership) && isLocalGovernmentOnlyPath(req.originalUrl);
+
+    if (preferLocalGovernment) {
+      membership = localGovernmentMembership;
+    } else if (requestedCentre) {
       membership = centreMemberships.find((item) => item.healthcare_centre_id === requestedCentre);
       if (!membership) {
         throw new AuthenticationError(
@@ -91,6 +103,11 @@ const authenticate = async (req, res, next) => {
           'CENTRE_ACCESS_DENIED'
         );
       }
+    } else if (
+      payload.centreId &&
+      centreMemberships.some((item) => item.healthcare_centre_id === payload.centreId)
+    ) {
+      membership = centreMemberships.find((item) => item.healthcare_centre_id === payload.centreId);
     } else {
       membership = centreMemberships[0] || memberships[0];
     }

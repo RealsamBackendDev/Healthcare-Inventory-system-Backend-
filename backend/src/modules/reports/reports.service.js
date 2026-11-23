@@ -417,6 +417,62 @@ const buildReturnReport = async (healthcareCentreId, filters = {}) => {
   };
 };
 
+const DAMAGE_DECISIONS = {
+  restocked: 'Restocked',
+  written_off: 'Written off',
+  returned: 'Returned to sender'
+};
+
+const damageReturnLabel = (row) => {
+  if (row.return_status === 'received') {
+    return row.return_outcome === 'restocked' ? 'Signed in, restocked' : 'Signed in, written off';
+  }
+  if (row.return_status === 'in_transit') {
+    return 'In transit';
+  }
+  return '';
+};
+
+const buildDamageReport = async (healthcareCentreId, filters = {}) => {
+  const rows = await repository.damageRows(healthcareCentreId, {
+    from: parseDateInput(filters.from),
+    to: parseDateInput(filters.to)
+  });
+  return {
+    title: 'Damage & Returns Report',
+    subtitle: `Generated ${formatDateTime(new Date())}`,
+    filename: 'damage-report',
+    columns: [
+      { header: 'Recorded', key: 'recordedAt', width: 20 },
+      { header: 'Drug', key: 'drug', width: 30 },
+      { header: 'Batch', key: 'batch', width: 16 },
+      { header: 'Quantity', key: 'quantity', width: 14 },
+      { header: 'Value (NGN)', key: 'value', width: 16 },
+      { header: 'Decision', key: 'decision', width: 18 },
+      { header: 'Loss borne by', key: 'lossBearer', width: 14 },
+      { header: 'Replacement owed', key: 'replacementOwed', width: 16 },
+      { header: 'Agreed with', key: 'agreedWith', width: 22 },
+      { header: 'Return', key: 'returnStatus', width: 20 },
+      { header: 'Recorded by', key: 'recordedBy', width: 22 },
+      { header: 'Note', key: 'note', width: 40 }
+    ],
+    rows: rows.map((row) => ({
+      recordedAt: formatDateTime(row.created_at),
+      drug: `${row.drug_name} (${row.drug_code})`,
+      batch: row.batch_number,
+      quantity: `${roundQuantity(Number(row.quantity))} ${row.unit_of_measure}`,
+      value: roundMoney(Number(row.quantity) * Number(row.unit_cost || 0)),
+      decision: DAMAGE_DECISIONS[row.disposition] || row.disposition,
+      lossBearer: row.loss_bearer === 'sender' ? 'Sender' : 'Receiver',
+      replacementOwed: row.replacement_owed ? 'Yes' : 'No',
+      agreedWith: row.agreed_with_name || '',
+      returnStatus: damageReturnLabel(row),
+      recordedBy: row.recorded_by_name,
+      note: row.note || ''
+    }))
+  };
+};
+
 const buildAuditReport = async (healthcareCentreId, filters = {}) => {
   const rows = await repository.auditRows(healthcareCentreId, {
     from: parseDateInput(filters.from),
@@ -462,5 +518,6 @@ module.exports = {
   buildRequisitionReport,
   buildAdjustmentReport,
   buildReturnReport,
+  buildDamageReport,
   buildAuditReport
 };

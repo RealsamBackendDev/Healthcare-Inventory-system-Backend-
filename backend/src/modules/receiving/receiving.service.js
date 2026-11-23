@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { withTransaction } = require('../../database/connection');
 const { ConflictError, NotFoundError, ValidationError } = require('../../shared/errors/AppError');
-const { addQuantity, roundMoney } = require('../../shared/utils/numbers');
+const { addQuantity, roundMoney, isCountableUnit, isWholeQuantity } = require('../../shared/utils/numbers');
 const { getPagination, buildPaginationMeta } = require('../../shared/utils/pagination');
 const { recordAudit } = require('../../shared/utils/audit');
 const { parseDateInput, isoDateOf, todayIsoDate } = require('../../shared/utils/date');
@@ -189,6 +189,12 @@ const createReceipt = async ({
         throw new ValidationError('One or more receipt rows reference an unknown or inactive drug', [
           { field: `items.${index}.drugId`, message: 'Drug is not available in this healthcare centre' }
         ]);
+      }
+      if (isCountableUnit(drug.unit_of_measure) && !isWholeQuantity(item.quantity)) {
+        throw new ValidationError(
+          `${drug.name} is counted in ${drug.unit_of_measure || 'units'}, so the quantity must be a whole number`,
+          [{ field: `items.${index}.quantity`, message: 'Enter a whole number' }]
+        );
       }
     });
 

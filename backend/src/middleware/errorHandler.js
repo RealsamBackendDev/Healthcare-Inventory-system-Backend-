@@ -38,6 +38,10 @@ const errorHandler = (error, req, res, next) => {
     statusCode = 400;
     code = 'CONSTRAINT_VIOLATION';
     message = 'The submitted values violate a database constraint';
+  } else if (error && error.code === '45B01') {
+    statusCode = 409;
+    code = 'BATCH_EXPIRY_CONFLICT';
+    message = error.message;
   } else if (error && error.type === 'entity.parse.failed') {
     statusCode = 400;
     code = 'INVALID_JSON';

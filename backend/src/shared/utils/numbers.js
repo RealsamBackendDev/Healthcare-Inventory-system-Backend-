@@ -38,6 +38,27 @@ const formatQuantity = (value) => {
 
 const formatMoney = (value) => roundMoney(value).toFixed(2);
 
+const COUNTABLE_UNITS = [
+  'tablet',
+  'capsule',
+  'vial',
+  'ampoule',
+  'bottle',
+  'sachet',
+  'tube',
+  'suppository',
+  'strip',
+  'piece',
+  'unit',
+  'box',
+  'pack'
+];
+
+const isCountableUnit = (unitOfMeasure) =>
+  COUNTABLE_UNITS.includes(String(unitOfMeasure || '').trim().toLowerCase());
+
+const isWholeQuantity = (quantity) => Math.abs(Number(quantity) - Math.round(Number(quantity))) < 1e-9;
+
 module.exports = {
   toNumber,
   roundQuantity,
@@ -51,5 +72,8 @@ module.exports = {
   subtractQuantity,
   multiplyMoney,
   formatQuantity,
-  formatMoney
+  formatMoney,
+  COUNTABLE_UNITS,
+  isCountableUnit,
+  isWholeQuantity
 };

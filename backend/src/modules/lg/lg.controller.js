@@ -349,6 +349,7 @@ module.exports = {
   warehouseReport: sendLgReport(service.buildWarehouseReport),
   dispatchReport: sendLgReport(service.buildDispatchReport),
   receiptReport: sendLgReport(service.buildReceiptReport),
+  damageReport: sendLgReport(service.buildDamageReport),
   getWarehouse,
   getWarehouseBatches,
   listWarehouseMovements,

@@ -27,14 +27,17 @@ const facilityIdParamSchema = z.object({
 });
 
 const decisionSchema = z.object({
+  clientRequestId: z.string().trim().min(8).max(80).optional(),
   note: z.string().trim().max(500).nullable().optional()
 });
 
 const declineSchema = z.object({
+  clientRequestId: z.string().trim().min(8).max(80).optional(),
   reason: z.string().trim().min(3, 'Give a short reason for declining').max(500)
 });
 
 const receiveSchema = z.object({
+  clientRequestId: z.string().trim().min(8).max(80).optional(),
   note: z.string().trim().max(500).nullable().optional(),
   items: z
     .array(
@@ -43,6 +46,7 @@ const receiveSchema = z.object({
         acceptedQuantity: z.coerce.number().min(0).max(1000000000).optional(),
         damagedQuantity: z.coerce.number().min(0).max(1000000000).optional(),
         missingQuantity: z.coerce.number().min(0).max(1000000000).optional(),
+        rejectedQuantity: z.coerce.number().min(0).max(1000000000).optional(),
         reason: z.string().trim().max(500).nullable().optional()
       })
     )

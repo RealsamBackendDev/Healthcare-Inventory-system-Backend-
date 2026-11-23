@@ -221,7 +221,7 @@ const listTransferLines = async (executor, transferId) => {
   const { rows } = await executor.query(
     `SELECT ti.id, ti.drug_id, ti.source_batch_id, ti.transit_batch_id, ti.batch_number, ti.expiry_date,
             ti.quantity::float AS quantity, ti.unit_cost,
-            ti.accepted_quantity, ti.damaged_quantity, ti.missing_quantity,
+            ti.accepted_quantity, ti.damaged_quantity, ti.missing_quantity, ti.rejected_quantity,
             ti.discrepancy_status, ti.discrepancy_resolution, ti.discrepancy_note,
             ti.replacement_authorised_quantity, ti.replacement_transfer_id,
             rt.transfer_number AS replacement_transfer_number,
@@ -266,10 +266,17 @@ const updateTransferLineReceipt = async (client, entry) => {
     `UPDATE facility_transfer_items
         SET accepted_quantity = accepted_quantity + $2,
             damaged_quantity = damaged_quantity + $3,
-            missing_quantity = missing_quantity + $4
+            missing_quantity = missing_quantity + $4,
+            rejected_quantity = rejected_quantity + $5
       WHERE id = $1
-      RETURNING accepted_quantity, damaged_quantity, missing_quantity`,
-    [entry.lineId, entry.acceptedQuantity, entry.damagedQuantity, entry.missingQuantity]
+      RETURNING accepted_quantity, damaged_quantity, missing_quantity, rejected_quantity`,
+    [
+      entry.lineId,
+      entry.acceptedQuantity,
+      entry.damagedQuantity,
+      entry.missingQuantity,
+      entry.rejectedQuantity || 0
+    ]
   );
   return rows[0] || null;
 };
@@ -289,8 +296,9 @@ const insertTransferReceipt = async (client, receipt) => {
   const { rows } = await client.query(
     `INSERT INTO facility_transfer_receipts
        (local_government_id, healthcare_centre_id, transfer_id, note,
-        accepted_quantity, damaged_quantity, missing_quantity, received_by, received_by_name)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        accepted_quantity, damaged_quantity, missing_quantity, rejected_quantity,
+        received_by, received_by_name, idempotency_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       receipt.localGovernmentId,
@@ -300,8 +308,10 @@ const insertTransferReceipt = async (client, receipt) => {
       receipt.acceptedQuantity,
       receipt.damagedQuantity,
       receipt.missingQuantity,
+      receipt.rejectedQuantity || 0,
       receipt.actorId,
-      receipt.actorName
+      receipt.actorName,
+      receipt.idempotencyKey || null
     ]
   );
   return rows[0];
@@ -311,8 +321,8 @@ const insertTransferReceiptItem = async (client, item) => {
   await client.query(
     `INSERT INTO facility_transfer_receipt_items
        (receipt_id, transfer_item_id, drug_id,
-        accepted_quantity, damaged_quantity, missing_quantity, reason)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        accepted_quantity, damaged_quantity, missing_quantity, rejected_quantity, reason)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       item.receiptId,
       item.lineId,
@@ -320,6 +330,7 @@ const insertTransferReceiptItem = async (client, item) => {
       item.acceptedQuantity,
       item.damagedQuantity,
       item.missingQuantity,
+      item.rejectedQuantity || 0,
       item.reason || null
     ]
   );
@@ -329,6 +340,7 @@ const listTransferReceipts = async (executor, transferId) => {
   const { rows } = await executor.query(
     `SELECT id, note, accepted_quantity::float AS accepted_quantity,
             damaged_quantity::float AS damaged_quantity, missing_quantity::float AS missing_quantity,
+            rejected_quantity::float AS rejected_quantity,
             received_by_name, received_at
        FROM facility_transfer_receipts
       WHERE transfer_id = $1
@@ -350,6 +362,7 @@ const lockShortageLine = async (client, transferId, lineId) => {
   const { rows } = await client.query(
     `SELECT ti.id, ti.drug_id, ti.quantity::float AS quantity, ti.transit_batch_id,
             ti.missing_quantity::float AS missing_quantity, ti.damaged_quantity::float AS damaged_quantity,
+            ti.rejected_quantity::float AS rejected_quantity,
             ti.discrepancy_status, d.name, d.code, d.unit_of_measure
        FROM facility_transfer_items ti
        JOIN drugs d ON d.id = ti.drug_id
@@ -428,6 +441,26 @@ const listIncomingRequests = async (healthcareCentreId) => {
   return rows;
 };
 
+const findDecisionReplay = async ({ transferId, healthcareCentreId, idempotencyKey }) => {
+  const { rows } = await query(
+    `SELECT id
+       FROM facility_transfers
+      WHERE id = $1
+        AND from_healthcare_centre_id = $2
+        AND decision_idempotency_key = $3`,
+    [transferId, healthcareCentreId, idempotencyKey]
+  );
+  return rows[0] || null;
+};
+
+const findReceiptByKey = async ({ transferId, idempotencyKey }) => {
+  const { rows } = await query(
+    'SELECT id FROM facility_transfer_receipts WHERE transfer_id = $1 AND idempotency_key = $2 LIMIT 1',
+    [transferId, idempotencyKey]
+  );
+  return rows[0] || null;
+};
+
 const setRequestApproved = async (client, request) => {
   const { rows } = await client.query(
     `UPDATE facility_transfers
@@ -438,6 +471,7 @@ const setRequestApproved = async (client, request) => {
             decided_by_name = $5,
             decided_at = now(),
             decision_note = $6,
+            decision_idempotency_key = $7,
             updated_at = now()
       WHERE id = $1
       RETURNING *`,
@@ -447,7 +481,8 @@ const setRequestApproved = async (client, request) => {
       request.totalQuantity,
       request.actorId,
       request.actorName,
-      request.note || null
+      request.note || null,
+      request.idempotencyKey || null
     ]
   );
   return rows[0];
@@ -461,10 +496,17 @@ const setRequestDeclined = async (client, request) => {
             decided_by_name = $3,
             decided_at = now(),
             decision_note = $4,
+            decision_idempotency_key = $5,
             updated_at = now()
       WHERE id = $1
       RETURNING *`,
-    [request.transferId, request.actorId, request.actorName, request.note || null]
+    [
+      request.transferId,
+      request.actorId,
+      request.actorName,
+      request.note || null,
+      request.idempotencyKey || null
+    ]
   );
   return rows[0];
 };
@@ -532,6 +574,8 @@ module.exports = {
   updateTransferLineReceipt,
   openTransferLineDiscrepancy,
   insertTransferReceipt,
+  findDecisionReplay,
+  findReceiptByKey,
   insertTransferReceiptItem,
   listTransferReceipts,
   lockShortageLine,

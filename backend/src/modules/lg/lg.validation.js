@@ -118,6 +118,7 @@ const receiveDeliverySchema = z.object({
         acceptedQuantity: z.coerce.number().min(0).max(1000000000),
         damagedQuantity: z.coerce.number().min(0).max(1000000000).optional(),
         missingQuantity: z.coerce.number().min(0).max(1000000000).optional(),
+        rejectedQuantity: z.coerce.number().min(0).max(1000000000).optional(),
         reason: z.string().trim().max(500).nullable().optional()
       })
     )

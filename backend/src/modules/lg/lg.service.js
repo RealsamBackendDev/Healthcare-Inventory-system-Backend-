@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { withTransaction } = require('../../database/connection');
 const { ConflictError, ForbiddenError, NotFoundError, ValidationError } = require('../../shared/errors/AppError');
-const { roundQuantity, roundMoney, isPositive } = require('../../shared/utils/numbers');
+const { roundQuantity, roundMoney, isPositive, isCountableUnit, isWholeQuantity } = require('../../shared/utils/numbers');
 const { todayIsoDate, parseDateInput } = require('../../shared/utils/date');
 const { recordAudit } = require('../../shared/utils/audit');
 const { getPagination, buildPaginationMeta } = require('../../shared/utils/pagination');
@@ -125,6 +125,7 @@ const mapRequisitionItem = (row) => {
     acceptedQuantity: roundQuantity(Number(row.accepted_quantity || 0)),
     damagedQuantity: damaged,
     missingQuantity: missing,
+    rejectedQuantity: roundQuantity(Number(row.rejected_quantity || 0)),
     writtenOffQuantity: writtenOff,
     replacementAuthorisedQuantity: replacement,
     closedShortQuantity: closedShort,
@@ -146,6 +147,7 @@ const mapDiscrepancy = (row) => ({
   unitOfMeasure: row.unit_of_measure,
   dispatchedQuantity: roundQuantity(Number(row.quantity)),
   missingQuantity: roundQuantity(Number(row.missing_quantity)),
+  rejectedQuantity: roundQuantity(Number(row.rejected_quantity || 0)),
   status: row.discrepancy_status,
   resolution: row.discrepancy_resolution || null,
   reason: row.discrepancy_reason || null,
@@ -174,8 +176,16 @@ const mapDispatchItem = (row) => ({
   acceptedQuantity: roundQuantity(Number(row.accepted_quantity || 0)),
   damagedQuantity: roundQuantity(Number(row.damaged_quantity || 0)),
   missingQuantity: roundQuantity(Number(row.missing_quantity || 0)),
+  rejectedQuantity: roundQuantity(Number(row.rejected_quantity || 0)),
   pendingQuantity: roundQuantity(
-    Math.max(0, Number(row.quantity) - Number(row.accepted_quantity || 0) - Number(row.damaged_quantity || 0) - Number(row.missing_quantity || 0))
+    Math.max(
+      0,
+      Number(row.quantity) -
+        Number(row.accepted_quantity || 0) -
+        Number(row.damaged_quantity || 0) -
+        Number(row.missing_quantity || 0) -
+        Number(row.rejected_quantity || 0)
+    )
   ),
   discrepancyReason: row.discrepancy_reason || null,
   unitCost: row.unit_cost === null ? null : Number(row.unit_cost)
@@ -197,6 +207,8 @@ const mapDispatch = (row) => ({
   acceptedQuantity: row.accepted_quantity === undefined ? undefined : roundQuantity(Number(row.accepted_quantity)),
   damagedQuantity: row.damaged_quantity === undefined ? undefined : roundQuantity(Number(row.damaged_quantity)),
   missingQuantity: row.missing_quantity === undefined ? undefined : roundQuantity(Number(row.missing_quantity)),
+  rejectedQuantity:
+    row.rejected_quantity === undefined ? undefined : roundQuantity(Number(row.rejected_quantity)),
   itemCount: row.item_count === undefined ? undefined : Number(row.item_count),
   totalQuantity: row.total_quantity === undefined ? undefined : roundQuantity(Number(row.total_quantity))
 });
@@ -280,6 +292,12 @@ const postReceipt = async ({ actor, scope, payload }) => {
         { field: `items.${index}.drugId`, message: 'Drug is not available in this local government' }
       ]);
     }
+      if (isCountableUnit(drug.unit_of_measure) && !isWholeQuantity(item.quantity)) {
+        throw new ValidationError(
+          `${drug.name} is counted in ${drug.unit_of_measure || 'units'}, so the quantity must be a whole number`,
+          [{ field: `items.${index}.quantity`, message: 'Enter a whole number' }]
+        );
+      }
   });
 
   const totalQuantity = roundQuantity(items.reduce((total, item) => total + item.quantity, 0));
@@ -802,7 +820,8 @@ const listIncomingDeliveries = async (healthcareCentreId) => {
     dispatchedByName: row.dispatched_by_name,
     dispatchedAt: row.dispatched_at,
     itemCount: Number(row.item_count),
-    totalQuantity: roundQuantity(Number(row.total_quantity))
+    totalQuantity: roundQuantity(Number(row.total_quantity)),
+    pendingQuantity: roundQuantity(Number(row.pending_quantity || 0))
   }));
 };
 
@@ -813,92 +832,6 @@ const getRequisitionDelivery = async (healthcareCentreId, requisitionId) => {
   }
   const items = await repository.listDispatchItems(dispatch.id);
   return { ...mapDispatch(dispatch), items: items.map(mapDispatchItem) };
-};
-
-const receiveDelivery = async ({ actor, scope, requisitionId, note }) => {
-  const healthcareCentreId = scope.healthcareCentreId;
-  if (!healthcareCentreId) {
-    throw new ForbiddenError('This action needs a healthcare centre account', 'FACILITY_ONLY');
-  }
-
-  const location = await repository.findFacilityLocation(healthcareCentreId);
-  if (!location) {
-    throw new NotFoundError('This healthcare centre has no active store location');
-  }
-
-  const dispatchId = await withTransaction(async (client) => {
-    const dispatch = await repository.lockDispatchForRequisition(client, healthcareCentreId, requisitionId);
-    if (!dispatch) {
-      throw new NotFoundError('No dispatch has been sent for this requisition');
-    }
-    if (dispatch.status === 'received') {
-      throw new ConflictError('This delivery has already been confirmed', 'DELIVERY_ALREADY_RECEIVED');
-    }
-
-    const items = await repository.listDispatchItems(dispatch.id);
-
-    for (const item of items) {
-      const batch = await repository.insertFacilityBatch(client, {
-        healthcareCentreId,
-        localGovernmentId: location.local_government_id,
-        stockLocationId: location.id,
-        drugId: item.drug_id,
-        batchNumber: item.batch_number,
-        expiryDate: item.expiry_date,
-        quantity: Number(item.quantity),
-        unitCost: item.unit_cost,
-        supplierReference: dispatch.dispatch_number
-      });
-
-      await repository.insertTransferMovement(client, {
-        healthcareCentreId,
-        drugId: item.drug_id,
-        batchId: batch.id,
-        quantity: Number(item.quantity),
-        reason: note || `Received from LG warehouse (${dispatch.dispatch_number})`,
-        actorId: actor.id,
-        actorName: actor.fullName,
-        sourceReference: dispatch.dispatch_number,
-        requisitionId
-      });
-    }
-
-    await repository.markDispatchReceived(client, {
-      dispatchId: dispatch.id,
-      actorId: actor.id,
-      actorName: actor.fullName
-    });
-
-    await repository.markRequisitionReceived(client, { requisitionId, healthcareCentreId });
-
-    await repository.insertRequisitionEvent(client, {
-      requisitionId,
-      eventType: 'received',
-      actorId: actor.id,
-      actorName: actor.fullName,
-      comment: note || `Delivery ${dispatch.dispatch_number} confirmed`
-    });
-
-    await recordAudit(client, {
-      healthcareCentreId,
-      localGovernmentId: location.local_government_id,
-      actor,
-      actorRoleCode: scope.roleCode,
-      actorScopeType: scope.scopeType,
-      action: 'delivery.received',
-      entityType: 'lg_dispatch',
-      entityId: dispatch.id,
-      summary: `Confirmed delivery ${dispatch.dispatch_number} (${items.length} item(s))`,
-      newValues: { itemCount: items.length }
-    });
-
-    return dispatch.id;
-  });
-
-  return {
-    dispatchId,
-    receivedItems: (await repository.listDispatchItems(dispatchId)).map(mapDispatchItem)
-  };
 };
 
 const isoDate = (value) => {
@@ -1090,6 +1023,66 @@ const buildReceiptReport = async (scope, filters) => {
   };
 };
 
+const DAMAGE_DECISION_LABELS = {
+  restocked: 'Restocked',
+  written_off: 'Written off',
+  returned: 'Returned to sender'
+};
+
+const damageReturnLabel = (row) => {
+  if (row.return_status === 'received') {
+    return row.return_outcome === 'restocked' ? 'Signed in, restocked' : 'Signed in, written off';
+  }
+  if (row.return_status === 'in_transit') {
+    return 'In transit';
+  }
+  return '';
+};
+
+const buildDamageReport = async (scope, filters) => {
+  const localGovernmentId = requireLocalGovernmentScope(scope);
+  const rows = await repository.damageReportRows({
+    localGovernmentId,
+    from: parseDateInput(filters.from),
+    to: parseDateInput(filters.to)
+  });
+  return {
+    title: 'LG damaged stock',
+    subtitle: 'Damaged stock decisions recorded by facilities',
+    filename: 'lg-damaged-stock',
+    columns: [
+      { key: 'recordedAt', header: 'Recorded', width: 14 },
+      { key: 'centre', header: 'Facility', width: 30 },
+      { key: 'drug', header: 'Drug', width: 30 },
+      { key: 'batch', header: 'Batch', width: 16 },
+      { key: 'quantity', header: 'Quantity', width: 14 },
+      { key: 'value', header: 'Value (NGN)', width: 16 },
+      { key: 'decision', header: 'Decision', width: 18 },
+      { key: 'lossBearer', header: 'Loss borne by', width: 14 },
+      { key: 'replacementOwed', header: 'Replacement owed', width: 16 },
+      { key: 'agreedWith', header: 'Agreed with', width: 22 },
+      { key: 'returnStatus', header: 'Return', width: 20 },
+      { key: 'recordedBy', header: 'Recorded by', width: 22 },
+      { key: 'note', header: 'Note', width: 40 }
+    ],
+    rows: rows.map((row) => ({
+      recordedAt: isoDate(row.created_at),
+      centre: `${row.centre_name} (${row.centre_code})`,
+      drug: `${row.drug_name} (${row.drug_code})`,
+      batch: row.batch_number,
+      quantity: `${roundQuantity(Number(row.quantity))} ${row.unit_of_measure}`,
+      value: roundMoney(Number(row.quantity) * Number(row.unit_cost || 0)),
+      decision: DAMAGE_DECISION_LABELS[row.disposition] || row.disposition,
+      lossBearer: row.loss_bearer === 'sender' ? 'Sender' : 'Receiver',
+      replacementOwed: row.replacement_owed ? 'Yes' : 'No',
+      agreedWith: row.agreed_with_name || '',
+      returnStatus: damageReturnLabel(row),
+      recordedBy: row.recorded_by_name,
+      note: row.note || ''
+    }))
+  };
+};
+
 const mapApproval = (row) => ({
   id: row.id,
   type: row.approval_type,
@@ -1137,17 +1130,21 @@ const resolveDiscrepancy = async ({ actor, scope, itemId, resolution, note }) =>
       actorName: actor.fullName
     });
 
+    const outstanding = roundQuantity(
+      Number(item.missing_quantity || 0) + Number(item.rejected_quantity || 0)
+    );
+
     await repository.bumpRequisitionItemCounters(client, {
       requisitionId: item.requisition_id,
       drugId: item.drug_id,
-      replacement: resolution === 'reissue' ? Number(item.missing_quantity) : 0,
-      closedShort: resolution === 'written_off' ? Number(item.missing_quantity) : 0
+      replacement: resolution === 'reissue' ? outstanding : 0,
+      closedShort: resolution === 'written_off' ? outstanding : 0
     });
 
     const released = await repository.releaseTransitQuantity(client, {
       transitBatchId: item.transit_batch_id,
       drugId: item.drug_id,
-      quantity: Number(item.missing_quantity),
+      quantity: outstanding,
       movementType: 'write_off',
       reason:
         resolution === 'reissue'
@@ -1191,8 +1188,8 @@ const resolveDiscrepancy = async ({ actor, scope, itemId, resolution, note }) =>
       actorName: actor.fullName,
       comment:
         resolution === 'reissue'
-          ? `Shortage of ${roundQuantity(Number(item.missing_quantity))} ${item.drug_name} to be replaced, dispatch re-opened`
-          : `Shortage of ${roundQuantity(Number(item.missing_quantity))} ${item.drug_name} written off - ${note}`
+          ? `Shortage of ${outstanding} ${item.drug_name} to be replaced, dispatch re-opened`
+          : `Shortage of ${outstanding} ${item.drug_name} written off - ${note}`
     });
 
     await recordAudit(client, {
@@ -1213,6 +1210,8 @@ const resolveDiscrepancy = async ({ actor, scope, itemId, resolution, note }) =>
       drugName: item.drug_name,
       dispatchNumber: item.dispatch_number,
       missingQuantity: roundQuantity(Number(item.missing_quantity)),
+      rejectedQuantity: roundQuantity(Number(item.rejected_quantity || 0)),
+      shortageQuantity: outstanding,
       resolution,
       requisitionClosed
     };
@@ -2637,12 +2636,12 @@ module.exports = {
   getDispatchDetail,
   listIncomingDeliveries,
   getRequisitionDelivery,
-  receiveDelivery,
   getReportsSummary,
   buildDemandReport,
   buildWarehouseReport,
   buildDispatchReport,
   buildReceiptReport,
+  buildDamageReport,
   listWarehouseMovements,
   getLedgerReconciliation,
   listThresholdApprovals,

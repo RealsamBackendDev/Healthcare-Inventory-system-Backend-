@@ -32,5 +32,6 @@ module.exports = {
   requisitions: send(service.buildRequisitionReport),
   adjustments: send(service.buildAdjustmentReport),
   returns: send(service.buildReturnReport),
+  damage: send(service.buildDamageReport),
   audit: send(service.buildAuditReport)
 };

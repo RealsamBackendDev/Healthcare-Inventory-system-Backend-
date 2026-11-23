@@ -1,4 +1,5 @@
 const { NotFoundError } = require('../../shared/errors/AppError');
+const { ROLES } = require('../../shared/constants');
 const repository = require('./organisations.repository');
 
 const mapCentre = (row) => ({
@@ -27,34 +28,42 @@ const getActiveCentre = async (healthcareCentreId) => {
   return mapCentre(centre);
 };
 
-const getStructure = async () => {
+const getStructure = async (scope) => {
   const [states, localGovernments, centres] = await Promise.all([
     repository.listStates(),
     repository.listLocalGovernments(),
     repository.listCentres()
   ]);
 
-  return states.map((state) => ({
-    id: state.id,
-    name: state.name,
-    code: state.code,
-    localGovernments: localGovernments
-      .filter((item) => item.state_id === state.id)
-      .map((item) => ({
-        id: item.id,
-        name: item.name,
-        code: item.code,
-        centres: centres
-          .filter((centre) => centre.local_government_id === item.id)
-          .map((centre) => ({
-            id: centre.id,
-            name: centre.name,
-            code: centre.code,
-            address: centre.address,
-            isActive: centre.is_active
-          }))
-      }))
-  }));
+  const seesEveryLocalGovernment = !scope || scope.roleCode === ROLES.SYSTEM_ADMIN;
+  const visibleLocalGovernments = seesEveryLocalGovernment
+    ? localGovernments
+    : localGovernments.filter((item) => item.id === scope.localGovernmentId);
+  const visibleStateIds = new Set(visibleLocalGovernments.map((item) => item.state_id));
+
+  return states
+    .filter((state) => visibleStateIds.has(state.id))
+    .map((state) => ({
+      id: state.id,
+      name: state.name,
+      code: state.code,
+      localGovernments: visibleLocalGovernments
+        .filter((item) => item.state_id === state.id)
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          code: item.code,
+          centres: centres
+            .filter((centre) => centre.local_government_id === item.id)
+            .map((centre) => ({
+              id: centre.id,
+              name: centre.name,
+              code: centre.code,
+              address: centre.address,
+              isActive: centre.is_active
+            }))
+        }))
+    }));
 };
 
 const getLocalGovernmentOverview = async (localGovernmentId) => {

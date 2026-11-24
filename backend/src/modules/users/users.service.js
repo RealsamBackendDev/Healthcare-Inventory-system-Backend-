@@ -236,7 +236,7 @@ const updateSettings = async ({ actor, healthcareCentreId, updates }) => {
 };
 
 const listRoles = () => [
-  { code: ROLES.ADMINISTRATOR, name: 'Administrator' },
+  { code: ROLES.ADMINISTRATOR, name: 'OIC (Officer In Charge)' },
   { code: ROLES.STAFF, name: 'Staff' }
 ];
 

@@ -148,6 +148,7 @@ const mapDiscrepancy = (row) => ({
   dispatchedQuantity: roundQuantity(Number(row.quantity)),
   missingQuantity: roundQuantity(Number(row.missing_quantity)),
   rejectedQuantity: roundQuantity(Number(row.rejected_quantity || 0)),
+  damagedQuantity: roundQuantity(Number(row.damaged_quantity || 0)),
   status: row.discrepancy_status,
   resolution: row.discrepancy_resolution || null,
   reason: row.discrepancy_reason || null,
@@ -1130,8 +1131,11 @@ const resolveDiscrepancy = async ({ actor, scope, itemId, resolution, note }) =>
       actorName: actor.fullName
     });
 
-    const outstanding = roundQuantity(
+    const unsettled = roundQuantity(
       Number(item.missing_quantity || 0) + Number(item.rejected_quantity || 0)
+    );
+    const outstanding = roundQuantity(
+      unsettled + Number(item.damaged_quantity || 0)
     );
 
     await repository.bumpRequisitionItemCounters(client, {
@@ -1144,7 +1148,7 @@ const resolveDiscrepancy = async ({ actor, scope, itemId, resolution, note }) =>
     const released = await repository.releaseTransitQuantity(client, {
       transitBatchId: item.transit_batch_id,
       drugId: item.drug_id,
-      quantity: outstanding,
+      quantity: unsettled,
       movementType: 'write_off',
       reason:
         resolution === 'reissue'
@@ -1211,6 +1215,7 @@ const resolveDiscrepancy = async ({ actor, scope, itemId, resolution, note }) =>
       dispatchNumber: item.dispatch_number,
       missingQuantity: roundQuantity(Number(item.missing_quantity)),
       rejectedQuantity: roundQuantity(Number(item.rejected_quantity || 0)),
+      damagedQuantity: roundQuantity(Number(item.damaged_quantity || 0)),
       shortageQuantity: outstanding,
       resolution,
       requisitionClosed

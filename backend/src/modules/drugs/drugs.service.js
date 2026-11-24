@@ -85,7 +85,7 @@ const createDrug = async ({ actor, healthcareCentreId, payload }) => {
       minimumStockLevel: payload.minimumStockLevel
     });
 
-    const drug = await repository.findById(healthcareCentreId, created.id);
+    const drug = await repository.findById(healthcareCentreId, created.id, client);
 
     await recordAudit(client, {
       healthcareCentreId,
@@ -126,7 +126,7 @@ const updateDrug = async ({ actor, healthcareCentreId, drugId, payload }) => {
       });
     }
 
-    const updated = await repository.findById(healthcareCentreId, drugId);
+    const updated = await repository.findById(healthcareCentreId, drugId, client);
 
     await recordAudit(client, {
       healthcareCentreId,
@@ -155,7 +155,7 @@ const setDrugActiveState = async ({ actor, healthcareCentreId, drugId, isActive 
 
   return withTransaction(async (client) => {
     await repository.setActive(client, { healthcareCentreId, drugId, isActive });
-    const updated = await repository.findById(healthcareCentreId, drugId);
+    const updated = await repository.findById(healthcareCentreId, drugId, client);
 
     await recordAudit(client, {
       healthcareCentreId,

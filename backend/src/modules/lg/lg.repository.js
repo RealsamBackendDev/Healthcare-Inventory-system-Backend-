@@ -208,7 +208,7 @@ const listRequisitions = async ({ localGovernmentId, status, search, limit, offs
                 SUM(di.rejected_quantity) AS rejected_quantity,
                 SUM(di.damaged_quantity) AS damaged_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'resolved' AND di.discrepancy_resolution = 'written_off'
-                         THEN di.missing_quantity + di.rejected_quantity ELSE 0 END) AS written_off_quantity,
+                         THEN di.missing_quantity + di.rejected_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
                 SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
                          THEN di.quantity - di.accepted_quantity - di.damaged_quantity
                               - di.missing_quantity - di.rejected_quantity
@@ -293,7 +293,7 @@ const listRequisitionItems = async (requisitionId) => {
                 SUM(di.missing_quantity) AS missing_quantity,
                 SUM(di.rejected_quantity) AS rejected_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'resolved' AND di.discrepancy_resolution = 'written_off'
-                         THEN di.missing_quantity + di.rejected_quantity ELSE 0 END) AS written_off_quantity,
+                         THEN di.missing_quantity + di.rejected_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
                 SUM(CASE WHEN disp.status IN ('dispatched', 'partially_received')
                          THEN di.quantity - di.accepted_quantity - di.damaged_quantity
                               - di.missing_quantity - di.rejected_quantity
@@ -1240,7 +1240,7 @@ const openDispatchItemDiscrepancy = async (client, itemId) => {
     `UPDATE lg_dispatch_items
         SET discrepancy_status = 'open'
       WHERE id = $1
-        AND (missing_quantity > 0 OR rejected_quantity > 0)`,
+        AND (missing_quantity > 0 OR rejected_quantity > 0 OR damaged_quantity > 0)`,
     [itemId]
   );
 };
@@ -1261,7 +1261,7 @@ const countOpenDiscrepancies = async (client, requisitionId) => {
 const listRequisitionDiscrepancies = async (requisitionId) => {
   const { rows } = await query(
     `SELECT di.id, di.dispatch_id, di.drug_id, di.quantity, di.missing_quantity,
-            di.rejected_quantity,
+            di.rejected_quantity, di.damaged_quantity,
             di.discrepancy_status, di.discrepancy_resolution, di.discrepancy_reason,
             di.discrepancy_note, di.resolved_at, di.resolved_by_name,
             d.dispatch_number, dr.code AS drug_code, dr.name AS drug_name, dr.unit_of_measure
@@ -1280,7 +1280,7 @@ const listRequisitionDiscrepancies = async (requisitionId) => {
 const lockDiscrepancyItem = async (client, itemId, localGovernmentId) => {
   const { rows } = await client.query(
     `SELECT di.id, di.dispatch_id, di.drug_id, di.missing_quantity, di.rejected_quantity,
-            di.transit_batch_id, di.discrepancy_status,
+            di.damaged_quantity, di.transit_batch_id, di.discrepancy_status,
             d.requisition_id, d.healthcare_centre_id, d.dispatch_number,
             dr.name AS drug_name, dr.code AS drug_code
        FROM lg_dispatch_items di
@@ -1324,7 +1324,7 @@ const requisitionDiscrepancyBalances = async (client, requisitionId) => {
                 SUM(di.accepted_quantity) AS accepted_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'resolved'
                           AND di.discrepancy_resolution = 'written_off'
-                         THEN di.missing_quantity + di.rejected_quantity ELSE 0 END) AS written_off_quantity,
+                         THEN di.missing_quantity + di.rejected_quantity + di.damaged_quantity ELSE 0 END) AS written_off_quantity,
                 SUM(CASE WHEN di.discrepancy_status = 'open' THEN 1 ELSE 0 END) AS open_count
            FROM lg_dispatch_items di
            JOIN lg_dispatches disp ON disp.id = di.dispatch_id

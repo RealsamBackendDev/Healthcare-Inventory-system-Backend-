@@ -84,11 +84,47 @@ const PERMISSION_DEFINITIONS = [
   { code: PERMISSIONS.LG_REPORTS_VIEW, name: 'View LG reports', description: 'View and export local government demand, warehouse and distribution reports' }
 ];
 
+const LG_ROLE_PERMISSIONS = [
+  PERMISSIONS.USERS_MANAGE,
+  PERMISSIONS.MEMBERSHIPS_MANAGE,
+  PERMISSIONS.ORGANISATIONS_MANAGE,
+  PERMISSIONS.DRUGS_VIEW,
+  PERMISSIONS.DRUGS_MANAGE,
+  PERMISSIONS.INVENTORY_VIEW,
+  PERMISSIONS.EXPIRY_VIEW,
+  PERMISSIONS.REPORTS_VIEW,
+  PERMISSIONS.LG_REPORTS_VIEW,
+  PERMISSIONS.AUDIT_VIEW,
+  PERMISSIONS.SETTINGS_MANAGE,
+  PERMISSIONS.NOTIFICATIONS_VIEW,
+  PERMISSIONS.LG_WAREHOUSE_VIEW,
+  PERMISSIONS.LG_ORDERS_MANAGE,
+  PERMISSIONS.LG_CONSOLIDATIONS_MANAGE,
+  PERMISSIONS.LG_TRANSFERS_MANAGE,
+  PERMISSIONS.REQUISITIONS_LG_REVIEW,
+  PERMISSIONS.CONSOLIDATIONS_CREATE,
+  PERMISSIONS.CONSOLIDATIONS_APPROVE,
+  PERMISSIONS.WAREHOUSE_RECEIVE,
+  PERMISSIONS.WAREHOUSE_ADJUST,
+  PERMISSIONS.DISTRIBUTIONS_MANAGE,
+  PERMISSIONS.DISPATCHES_POST,
+  PERMISSIONS.DELIVERIES_RECEIVE,
+  PERMISSIONS.DISCREPANCIES_CLOSE,
+  PERMISSIONS.THRESHOLDS_APPROVE
+];
+
+const LG_OFFICER_PERMISSIONS = LG_ROLE_PERMISSIONS.filter(
+  (permission) =>
+    permission !== PERMISSIONS.USERS_MANAGE &&
+    permission !== PERMISSIONS.ORGANISATIONS_MANAGE &&
+    permission !== PERMISSIONS.SETTINGS_MANAGE
+);
+
 const ROLE_DEFINITIONS = [
   {
     code: ROLES.ADMINISTRATOR,
-    name: 'Administrator',
-    description: 'Administrative access to the healthcare centre, without local government or system-level rights',
+    name: 'OIC (Officer In Charge)',
+    description: 'Officer In Charge: runs the healthcare centre, including its staff accounts, stock, requisitions and approvals',
     permissions: [
       PERMISSIONS.USERS_MANAGE,
       PERMISSIONS.DRUGS_VIEW,
@@ -143,50 +179,15 @@ const ROLE_DEFINITIONS = [
   },
   {
     code: ROLES.LG_ADMIN,
-    name: 'LG Administrator',
-    description: 'Manages local government facilities, memberships and configuration without operational approval rights',
-    permissions: [
-      PERMISSIONS.USERS_MANAGE,
-      PERMISSIONS.MEMBERSHIPS_MANAGE,
-      PERMISSIONS.ORGANISATIONS_MANAGE,
-      PERMISSIONS.DRUGS_VIEW,
-      PERMISSIONS.DRUGS_MANAGE,
-      PERMISSIONS.INVENTORY_VIEW,
-      PERMISSIONS.EXPIRY_VIEW,
-      PERMISSIONS.REPORTS_VIEW,
-      PERMISSIONS.LG_REPORTS_VIEW,
-      PERMISSIONS.AUDIT_VIEW,
-      PERMISSIONS.SETTINGS_MANAGE,
-      PERMISSIONS.NOTIFICATIONS_VIEW
-    ]
+    name: 'MOH (Medical Officer of Health)',
+    description: 'Medical Officer of Health: oversees every facility, account and supply operation in the local government',
+    permissions: LG_ROLE_PERMISSIONS
   },
   {
     code: ROLES.LG_INVENTORY_OFFICER,
     name: 'Logistician',
-    description: 'Reviews and approves LG requisitions and consolidations and runs warehouse and distribution operations',
-    permissions: [
-      PERMISSIONS.LG_WAREHOUSE_VIEW,
-      PERMISSIONS.LG_ORDERS_MANAGE,
-      PERMISSIONS.LG_CONSOLIDATIONS_MANAGE,
-      PERMISSIONS.LG_TRANSFERS_MANAGE,
-      PERMISSIONS.DRUGS_VIEW,
-      PERMISSIONS.INVENTORY_VIEW,
-      PERMISSIONS.EXPIRY_VIEW,
-      PERMISSIONS.REPORTS_VIEW,
-      PERMISSIONS.LG_REPORTS_VIEW,
-      PERMISSIONS.REQUISITIONS_LG_REVIEW,
-      PERMISSIONS.CONSOLIDATIONS_CREATE,
-      PERMISSIONS.CONSOLIDATIONS_APPROVE,
-      PERMISSIONS.WAREHOUSE_RECEIVE,
-      PERMISSIONS.WAREHOUSE_ADJUST,
-      PERMISSIONS.DISTRIBUTIONS_MANAGE,
-      PERMISSIONS.DISPATCHES_POST,
-      PERMISSIONS.DELIVERIES_RECEIVE,
-      PERMISSIONS.DISCREPANCIES_CLOSE,
-      PERMISSIONS.THRESHOLDS_APPROVE,
-      PERMISSIONS.AUDIT_VIEW,
-      PERMISSIONS.NOTIFICATIONS_VIEW
-    ]
+    description: 'Runs warehouse, distribution and requisition operations in the local government, with access to LG facilities',
+    permissions: LG_OFFICER_PERMISSIONS
   }
 ];
 

@@ -46,8 +46,9 @@ const list = async ({ healthcareCentreId, search, isActive, limit, offset }) => 
   return { rows, total: countRows[0].total };
 };
 
-const findById = async (healthcareCentreId, drugId) => {
-  const { rows } = await query(`${baseSelect} AND d.id = $2`, [healthcareCentreId, drugId]);
+const findById = async (healthcareCentreId, drugId, client) => {
+  const executor = client || { query };
+  const { rows } = await executor.query(`${baseSelect} AND d.id = $2`, [healthcareCentreId, drugId]);
   return rows[0] || null;
 };
 

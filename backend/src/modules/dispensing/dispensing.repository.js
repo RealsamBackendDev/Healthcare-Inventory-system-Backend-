@@ -2,9 +2,11 @@ const { query } = require('../../database/connection');
 
 const findDrugs = async (client, healthcareCentreId, drugIds) => {
   const { rows } = await client.query(
-    `SELECT id, code, name, unit_of_measure, is_active
-       FROM drugs
-      WHERE healthcare_centre_id = $1 AND id = ANY($2::uuid[])`,
+    `SELECT d.id, d.code, d.name, d.unit_of_measure, d.is_active
+       FROM drugs d
+       JOIN healthcare_centres hc ON hc.id = $1
+      WHERE d.local_government_id = hc.local_government_id
+        AND d.id = ANY($2::uuid[])`,
     [healthcareCentreId, drugIds]
   );
   return rows;

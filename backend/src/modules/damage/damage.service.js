@@ -341,13 +341,25 @@ const recordDisposition = async ({ actor, scope, batchId, payload }) => {
         actorName: actor.fullName,
         sourceReference: batch.supplier_reference
       });
+
+      await repository.insertMovement(client, {
+        healthcareCentreId: destination.healthcareCentreId,
+        drugId: batch.drug_id,
+        batchId: returnBatch.id,
+        movementType: 'transit_in',
+        quantity,
+        reason: `Damaged stock in transit to ${destination.centreName}`,
+        actorId: actor.id,
+        actorName: actor.fullName,
+        sourceReference: batch.supplier_reference
+      });
     } else {
       await repository.insertMovement(client, {
         healthcareCentreId,
         drugId: batch.drug_id,
         batchId: batch.id,
         movementType: 'write_off',
-        quantity,
+        quantity: -quantity,
         reason: `Damaged stock written off - ${payload.note}`,
         actorId: actor.id,
         actorName: actor.fullName,
@@ -558,8 +570,22 @@ const confirmReturn = async ({ actor, scope, batchId, payload }) => {
         drugId: batch.drug_id,
         batchId: batch.id,
         movementType: 'write_off',
-        quantity,
+        quantity: -quantity,
         reason: `Returned damaged stock written off on arrival - ${payload.note}`,
+        actorId: actor.id,
+        actorName: actor.fullName,
+        sourceReference: batch.supplier_reference
+      });
+    }
+
+    if (outcome === 'restock') {
+      await repository.insertMovement(client, {
+        healthcareCentreId,
+        drugId: batch.drug_id,
+        batchId: batch.id,
+        movementType: 'transit_out',
+        quantity: -quantity,
+        reason: `Returned damaged stock inspected and signed back in - ${payload.note}`,
         actorId: actor.id,
         actorName: actor.fullName,
         sourceReference: batch.supplier_reference

@@ -1,7 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const authenticate = require('../../middleware/authenticate');
-const { authorize } = require('../../middleware/authorize');
+const { authorize, requireLocalGovernmentScope } = require('../../middleware/authorize');
 const validate = require('../../middleware/validate');
 const asyncHandler = require('../../shared/utils/asyncHandler');
 const { query, withTransaction } = require('../../database/connection');
@@ -101,6 +101,7 @@ const assertCodeAvailable = async (localGovernmentId, code, excludeDrugId) => {
 router.get(
   '/drugs',
   authenticate,
+  requireLocalGovernmentScope,
   authorize(PERMISSIONS.DRUGS_VIEW),
   validate({ query: listQuerySchema }),
   asyncHandler(async (req, res) => {
@@ -146,6 +147,7 @@ router.get(
 router.get(
   '/drugs/:drugId',
   authenticate,
+  requireLocalGovernmentScope,
   authorize(PERMISSIONS.DRUGS_VIEW),
   validate({ params: drugIdParamSchema }),
   asyncHandler(async (req, res) => {
@@ -161,6 +163,7 @@ router.get(
 router.post(
   '/drugs',
   authenticate,
+  requireLocalGovernmentScope,
   authorize(PERMISSIONS.DRUGS_MANAGE),
   validate({ body: drugBodySchema }),
   asyncHandler(async (req, res) => {
@@ -219,6 +222,7 @@ router.post(
 router.patch(
   '/drugs/:drugId',
   authenticate,
+  requireLocalGovernmentScope,
   authorize(PERMISSIONS.DRUGS_MANAGE),
   validate({ params: drugIdParamSchema, body: updateDrugSchema }),
   asyncHandler(async (req, res) => {
@@ -279,6 +283,7 @@ router.patch(
 router.post(
   '/drugs/:drugId/status',
   authenticate,
+  requireLocalGovernmentScope,
   authorize(PERMISSIONS.DRUGS_MANAGE),
   validate({ params: drugIdParamSchema, body: setActiveSchema }),
   asyncHandler(async (req, res) => {

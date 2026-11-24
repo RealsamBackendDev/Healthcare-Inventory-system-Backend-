@@ -8,16 +8,18 @@ const schemas = require('./warehouse-returns.validation');
 
 const router = express.Router();
 
-router.use(authenticate, requireLocalGovernmentScope);
-
 router.get(
   '/lg/warehouse/returns',
+  authenticate,
+  requireLocalGovernmentScope,
   authorize(PERMISSIONS.LG_WAREHOUSE_VIEW),
   controller.listWarehouseReturns
 );
 
 router.post(
   '/lg/warehouse/returns/:batchId/receive',
+  authenticate,
+  requireLocalGovernmentScope,
   authorize(PERMISSIONS.WAREHOUSE_RECEIVE),
   validate({ params: schemas.batchIdParamSchema, body: schemas.confirmationSchema }),
   controller.confirmWarehouseReturn

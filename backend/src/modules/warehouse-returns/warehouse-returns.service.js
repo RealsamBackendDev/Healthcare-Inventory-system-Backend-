@@ -158,12 +158,23 @@ const confirmWarehouseReturn = async ({ actor, scope, batchId, payload }) => {
         actorName: actor.fullName,
         sourceReference: batch.supplier_reference
       });
+
+      await repository.insertMovement(client, {
+        drugId: batch.drug_id,
+        batchId: batch.id,
+        movementType: 'transit_out',
+        quantity: -quantity,
+        reason: `Returned damaged stock inspected and signed into the warehouse - ${payload.note}`,
+        actorId: actor.id,
+        actorName: actor.fullName,
+        sourceReference: batch.supplier_reference
+      });
     } else {
       await repository.insertMovement(client, {
         drugId: batch.drug_id,
         batchId: batch.id,
         movementType: 'write_off',
-        quantity,
+        quantity: -quantity,
         reason: `Returned damaged stock written off by the warehouse - ${payload.note}`,
         actorId: actor.id,
         actorName: actor.fullName,

@@ -242,7 +242,7 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
         reason: line.reason
       });
 
-      if (line.missing > 0 || line.rejected > 0) {
+      if (line.missing > 0 || line.rejected > 0 || line.damaged > 0) {
         await repository.openDispatchItemDiscrepancy(client, line.item.id);
       }
 
@@ -354,7 +354,9 @@ const receiveDelivery = async ({ actor, scope, requisitionId, dispatchId, note, 
       (item) =>
         Number(item.accepted_quantity) + Number(item.closed_short_quantity || 0) >= Number(item.approved_quantity) - QUANTITY_EPSILON
     );
-    const discrepanciesOpened = lines.filter((line) => line.missing > 0 || line.rejected > 0).length;
+    const discrepanciesOpened = lines.filter(
+      (line) => line.missing > 0 || line.rejected > 0 || line.damaged > 0
+    ).length;
     const damagedQuarantined = roundQuantity(totalDamaged);
 
     if (settled) {

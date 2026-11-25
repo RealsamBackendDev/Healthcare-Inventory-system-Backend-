@@ -12,6 +12,39 @@ const createAdjustment = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: result });
 });
 
+const createBulkAdjustment = asyncHandler(async (req, res) => {
+  const result = await service.createBulkAdjustment({
+    actor: req.user,
+    roleCode: req.scope.roleCode,
+    healthcareCentreId: req.scope.healthcareCentreId,
+    lines: req.body.lines,
+    adjustmentType: req.body.adjustmentType,
+    reason: req.body.reason,
+    reference: req.body.reference
+  });
+  res.status(201).json({ success: true, data: result });
+});
+
+const approveAdjustmentGroup = asyncHandler(async (req, res) => {
+  const result = await service.approveAdjustmentGroup({
+    actor: req.user,
+    healthcareCentreId: req.scope.healthcareCentreId,
+    groupId: req.params.groupId,
+    comment: req.body.comment
+  });
+  res.json({ success: true, data: result });
+});
+
+const rejectAdjustmentGroup = asyncHandler(async (req, res) => {
+  const result = await service.rejectAdjustmentGroup({
+    actor: req.user,
+    healthcareCentreId: req.scope.healthcareCentreId,
+    groupId: req.params.groupId,
+    comment: req.body.comment
+  });
+  res.json({ success: true, data: result });
+});
+
 const listAdjustments = asyncHandler(async (req, res) => {
   const result = await service.listAdjustments(req.scope.healthcareCentreId, req.query);
   res.json({ success: true, data: result });
@@ -94,6 +127,9 @@ const rejectReturn = asyncHandler(async (req, res) => {
 
 module.exports = {
   createAdjustment,
+  createBulkAdjustment,
+  approveAdjustmentGroup,
+  rejectAdjustmentGroup,
   listAdjustments,
   getAdjustment,
   approveAdjustment,

@@ -3,7 +3,7 @@ const { query } = require('../../database/connection');
 const listAdjustments = async ({ healthcareCentreId, status, drugId, from, to, limit, offset }) => {
   const params = [healthcareCentreId, status || null, drugId || null, from || null, to || null];
   const { rows } = await query(
-    `SELECT a.id, a.drug_id, a.batch_id, a.adjustment_type, a.quantity, a.reason, a.reference, a.status,
+    `SELECT a.id, a.group_id, a.drug_id, a.batch_id, a.adjustment_type, a.quantity, a.reason, a.reference, a.status,
             a.requested_by, a.requested_by_name, a.reviewed_by, a.reviewed_by_name, a.reviewed_at, a.applied_at,
             a.review_comment, a.created_at,
             d.code AS drug_code, d.name AS drug_name, d.unit_of_measure,
@@ -61,13 +61,14 @@ const lockAdjustment = async (client, healthcareCentreId, adjustmentId) => {
 const insertAdjustment = async (client, adjustment) => {
   const { rows } = await client.query(
     `INSERT INTO stock_adjustments
-       (healthcare_centre_id, drug_id, batch_id, adjustment_type, quantity, reason, reference, status,
+       (healthcare_centre_id, group_id, drug_id, batch_id, adjustment_type, quantity, reason, reference, status,
         requested_by, requested_by_name, reviewed_by, reviewed_by_name, reviewed_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-             CASE WHEN $8 = 'approved' THEN now() ELSE NULL END)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+             CASE WHEN $9 = 'approved' THEN now() ELSE NULL END)
      RETURNING *`,
     [
       adjustment.healthcareCentreId,
+      adjustment.groupId || null,
       adjustment.drugId,
       adjustment.batchId,
       adjustment.adjustmentType,
@@ -102,6 +103,17 @@ const setReview = async (client, { adjustmentId, status, reviewerId, reviewerNam
 
 const markApplied = async (client, adjustmentId) => {
   await client.query('UPDATE stock_adjustments SET applied_at = now() WHERE id = $1', [adjustmentId]);
+};
+
+const lockAdjustmentGroup = async (client, healthcareCentreId, groupId) => {
+  const { rows } = await client.query(
+    `SELECT * FROM stock_adjustments
+      WHERE healthcare_centre_id = $1 AND group_id = $2
+      ORDER BY created_at
+      FOR UPDATE`,
+    [healthcareCentreId, groupId]
+  );
+  return rows;
 };
 
 const lockBatch = async (client, healthcareCentreId, batchId) => {
@@ -275,6 +287,7 @@ module.exports = {
   listAdjustments,
   findAdjustment,
   lockAdjustment,
+  lockAdjustmentGroup,
   insertAdjustment,
   setReview,
   markApplied,

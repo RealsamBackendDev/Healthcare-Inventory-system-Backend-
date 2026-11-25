@@ -1,5 +1,11 @@
+const { randomUUID } = require('crypto');
 const { withTransaction } = require('../../database/connection');
-const { ConflictError, NotFoundError, ValidationError } = require('../../shared/errors/AppError');
+const {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError
+} = require('../../shared/errors/AppError');
 const { roundQuantity, roundMoney, isZero, isNegative, hasSufficient } = require('../../shared/utils/numbers');
 const { getPagination, buildPaginationMeta } = require('../../shared/utils/pagination');
 const { parseDateInput } = require('../../shared/utils/date');
@@ -16,6 +22,7 @@ const repository = require('./adjustments.repository');
 
 const mapAdjustment = (row) => ({
   id: row.id,
+  groupId: row.group_id || null,
   drugId: row.drug_id,
   drugCode: row.drug_code,
   drugName: row.drug_name,
@@ -213,6 +220,18 @@ const approveAdjustment = async ({ actor, healthcareCentreId, adjustmentId, comm
     if (adjustment.status !== ADJUSTMENT_STATUS.PENDING) {
       throw new ConflictError('Only pending adjustments can be approved', 'ADJUSTMENT_NOT_PENDING');
     }
+    if (adjustment.group_id) {
+      throw new ConflictError(
+        'This line belongs to a stock quantity adjustment. Approve or reject the whole bulk request instead',
+        'GROUP_REVIEW_REQUIRED'
+      );
+    }
+    if (adjustment.requested_by === actor.id) {
+      throw new ForbiddenError(
+        'You cannot approve an adjustment you raised. Another administrator has to review it',
+        'SELF_APPROVAL_DENIED'
+      );
+    }
 
     const batch = await repository.lockBatch(client, healthcareCentreId, adjustment.batch_id);
     if (!batch) {
@@ -273,6 +292,12 @@ const rejectAdjustment = async ({ actor, healthcareCentreId, adjustmentId, comme
     if (adjustment.status !== ADJUSTMENT_STATUS.PENDING) {
       throw new ConflictError('Only pending adjustments can be rejected', 'ADJUSTMENT_NOT_PENDING');
     }
+    if (adjustment.group_id) {
+      throw new ConflictError(
+        'This line belongs to a stock quantity adjustment. Approve or reject the whole bulk request instead',
+        'GROUP_REVIEW_REQUIRED'
+      );
+    }
 
     await repository.setReview(client, {
       adjustmentId,
@@ -296,6 +321,245 @@ const rejectAdjustment = async ({ actor, healthcareCentreId, adjustmentId, comme
     });
 
     return { message: 'Adjustment rejected. Stock levels were not changed' };
+  });
+
+const prepareBulkLine = async (client, healthcareCentreId, line) => {
+  const quantity = roundQuantity(Number(line.quantity));
+
+  if (isZero(quantity)) {
+    throw new ValidationError('Every bulk line needs a quantity', [
+      { field: 'lines', message: 'Every line needs an increase or a reduction greater than zero' }
+    ]);
+  }
+
+  const batch = await repository.lockBatch(client, healthcareCentreId, line.batchId);
+
+  if (!batch || (line.drugId && batch.drug_id !== line.drugId)) {
+    throw new ValidationError('One of the selected batches could not be found', [
+      { field: 'lines', message: 'Remove the line and choose the batch again' }
+    ]);
+  }
+
+  if (!batch.drug_active) {
+    throw new ConflictError(`${batch.drug_name} is inactive, so it cannot be adjusted`, 'DRUG_INACTIVE');
+  }
+
+  if (batch.status === BATCH_STATUS.DESTROYED) {
+    throw new ConflictError(
+      `${batch.drug_name} (${batch.batch_number}) is destroyed and cannot be adjusted`,
+      'BATCH_DESTROYED'
+    );
+  }
+
+  const resultingQuantity = roundQuantity(Number(batch.quantity) + quantity);
+  if (isNegative(resultingQuantity)) {
+    throw new ConflictError(
+      `Reducing ${batch.drug_name} (${batch.batch_number}) by ${Math.abs(quantity)} would leave a negative quantity`,
+      'NEGATIVE_STOCK'
+    );
+  }
+
+  return { batch, quantity };
+};
+
+const createBulkAdjustment = async ({
+  actor,
+  roleCode,
+  healthcareCentreId,
+  lines,
+  adjustmentType,
+  reason,
+  reference
+}) =>
+  withTransaction(async (client) => {
+    const prepared = [];
+    for (const line of lines) {
+      prepared.push(await prepareBulkLine(client, healthcareCentreId, line));
+    }
+
+    const directApply = roleCode === ROLES.ADMINISTRATOR;
+    const groupId = randomUUID();
+    const adjustments = [];
+    let totalIncrease = 0;
+    let totalReduction = 0;
+
+    for (const entry of prepared) {
+      const adjustment = await repository.insertAdjustment(client, {
+        healthcareCentreId,
+        groupId,
+        drugId: entry.batch.drug_id,
+        batchId: entry.batch.id,
+        adjustmentType: adjustmentType || 'correction',
+        quantity: entry.quantity,
+        reason,
+        reference: reference || null,
+        status: directApply ? ADJUSTMENT_STATUS.APPROVED : ADJUSTMENT_STATUS.PENDING,
+        actorId: actor.id,
+        actorName: actor.fullName,
+        reviewedById: directApply ? actor.id : null,
+        reviewedByName: directApply ? actor.fullName : null
+      });
+
+      if (directApply) {
+        await applyToBatch(client, {
+          adjustment,
+          batch: entry.batch,
+          actor,
+          healthcareCentreId,
+          previousQuantity: entry.batch.quantity
+        });
+        await repository.markApplied(client, adjustment.id);
+      }
+
+      if (entry.quantity > 0) {
+        totalIncrease = roundQuantity(totalIncrease + entry.quantity);
+      } else {
+        totalReduction = roundQuantity(totalReduction + Math.abs(entry.quantity));
+      }
+
+      adjustments.push(
+        mapAdjustment({
+          ...adjustment,
+          group_id: groupId,
+          drug_code: entry.batch.drug_code,
+          drug_name: entry.batch.drug_name,
+          unit_of_measure: entry.batch.unit_of_measure,
+          batch_number: entry.batch.batch_number,
+          unit_cost: entry.batch.unit_cost
+        })
+      );
+    }
+
+    await recordAudit(client, {
+      healthcareCentreId,
+      actor,
+      action: directApply ? 'adjustment.bulk_applied' : 'adjustment.bulk_requested',
+      entityType: 'stock_adjustment_group',
+      entityId: groupId,
+      summary: `${directApply ? 'Applied' : 'Requested'} a ${prepared.length} line stock quantity adjustment`,
+      previousValues: null,
+      newValues: {
+        groupId,
+        lines: prepared.length,
+        totalIncrease,
+        totalReduction,
+        status: directApply ? ADJUSTMENT_STATUS.APPROVED : ADJUSTMENT_STATUS.PENDING
+      },
+      reason
+    });
+
+    return {
+      groupId,
+      requiresApproval: !directApply,
+      adjustments,
+      summary: { lines: prepared.length, totalIncrease, totalReduction }
+    };
+  });
+
+const approveAdjustmentGroup = async ({ actor, healthcareCentreId, groupId, comment }) =>
+  withTransaction(async (client) => {
+    const rows = await repository.lockAdjustmentGroup(client, healthcareCentreId, groupId);
+    if (rows.length === 0) {
+      throw new NotFoundError('Stock quantity adjustment was not found');
+    }
+
+    const pending = rows.filter((row) => row.status === ADJUSTMENT_STATUS.PENDING);
+    if (pending.length === 0) {
+      throw new ConflictError('Only pending corrections can be approved', 'ADJUSTMENT_NOT_PENDING');
+    }
+
+    if (pending.some((row) => row.requested_by === actor.id)) {
+      throw new ForbiddenError(
+        'You cannot approve a stock quantity adjustment you raised. Another administrator has to review it',
+        'SELF_APPROVAL_DENIED'
+      );
+    }
+
+    const applied = [];
+
+    for (const adjustment of pending) {
+      const batch = await repository.lockBatch(client, healthcareCentreId, adjustment.batch_id);
+      if (!batch) {
+        throw new NotFoundError('The batch for one of these corrections no longer exists');
+      }
+
+      const newQuantity = await applyToBatch(client, {
+        adjustment,
+        batch,
+        actor,
+        healthcareCentreId,
+        previousQuantity: batch.quantity
+      });
+
+      await repository.setReview(client, {
+        adjustmentId: adjustment.id,
+        status: ADJUSTMENT_STATUS.APPROVED,
+        reviewerId: actor.id,
+        reviewerName: actor.fullName,
+        comment,
+        applied: true
+      });
+
+      await recordAudit(client, {
+        healthcareCentreId,
+        actor,
+        action: 'adjustment.group_approved',
+        entityType: 'stock_adjustment_group',
+        entityId: groupId,
+        summary: `Approved bulk line ${adjustment.quantity} for ${batch.drug_name} (${batch.batch_number})`,
+        previousValues: { status: adjustment.status, batchQuantity: Number(batch.quantity) },
+        newValues: { status: ADJUSTMENT_STATUS.APPROVED, batchQuantity: newQuantity },
+        reason: comment || adjustment.reason
+      });
+
+      applied.push({
+        id: adjustment.id,
+        drugName: batch.drug_name,
+        batchNumber: batch.batch_number,
+        quantity: roundQuantity(Number(adjustment.quantity)),
+        batchQuantity: newQuantity
+      });
+    }
+
+    return { groupId, appliedCount: applied.length, lines: applied };
+  });
+
+const rejectAdjustmentGroup = async ({ actor, healthcareCentreId, groupId, comment }) =>
+  withTransaction(async (client) => {
+    const rows = await repository.lockAdjustmentGroup(client, healthcareCentreId, groupId);
+    if (rows.length === 0) {
+      throw new NotFoundError('Stock quantity adjustment was not found');
+    }
+
+    const pending = rows.filter((row) => row.status === ADJUSTMENT_STATUS.PENDING);
+    if (pending.length === 0) {
+      throw new ConflictError('Only pending corrections can be rejected', 'ADJUSTMENT_NOT_PENDING');
+    }
+
+    for (const adjustment of pending) {
+      await repository.setReview(client, {
+        adjustmentId: adjustment.id,
+        status: ADJUSTMENT_STATUS.REJECTED,
+        reviewerId: actor.id,
+        reviewerName: actor.fullName,
+        comment,
+        applied: false
+      });
+    }
+
+    await recordAudit(client, {
+      healthcareCentreId,
+      actor,
+      action: 'adjustment.group_rejected',
+      entityType: 'stock_adjustment_group',
+      entityId: groupId,
+      summary: `Rejected a ${pending.length} line bulk quantity correction`,
+      previousValues: { status: ADJUSTMENT_STATUS.PENDING },
+      newValues: { status: ADJUSTMENT_STATUS.REJECTED, lines: pending.length },
+      reason: comment || null
+    });
+
+    return { groupId, rejectedCount: pending.length };
   });
 
 const createStockCount = async ({ actor, healthcareCentreId, lines, reason, reference }) =>
@@ -376,10 +640,13 @@ const createStockCount = async ({ actor, healthcareCentreId, lines, reason, refe
 
 module.exports = {
   createAdjustment,
+  createBulkAdjustment,
   listAdjustments,
   getAdjustment,
   approveAdjustment,
   rejectAdjustment,
+  approveAdjustmentGroup,
+  rejectAdjustmentGroup,
   createStockCount,
   getThresholds,
   MOVEMENT_TYPES

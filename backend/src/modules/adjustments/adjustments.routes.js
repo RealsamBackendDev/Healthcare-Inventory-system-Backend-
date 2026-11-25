@@ -19,9 +19,33 @@ router.get(
 router.post(
   '/adjustments',
   authenticate,
-  authorize(PERMISSIONS.ADJUSTMENTS_CREATE),
+  authorize(PERMISSIONS.ADJUSTMENTS_QUANTITY),
   validate({ body: schemas.createAdjustmentSchema }),
   controller.createAdjustment
+);
+
+router.post(
+  '/adjustments/bulk',
+  authenticate,
+  authorize(PERMISSIONS.ADJUSTMENTS_QUANTITY),
+  validate({ body: schemas.bulkAdjustmentSchema }),
+  controller.createBulkAdjustment
+);
+
+router.post(
+  '/adjustments/groups/:groupId/approve',
+  authenticate,
+  authorize(PERMISSIONS.ADJUSTMENTS_APPROVE),
+  validate({ params: schemas.adjustmentGroupParamSchema, body: schemas.reviewSchema }),
+  controller.approveAdjustmentGroup
+);
+
+router.post(
+  '/adjustments/groups/:groupId/reject',
+  authenticate,
+  authorize(PERMISSIONS.ADJUSTMENTS_APPROVE),
+  validate({ params: schemas.adjustmentGroupParamSchema, body: schemas.rejectSchema }),
+  controller.rejectAdjustmentGroup
 );
 
 router.post(

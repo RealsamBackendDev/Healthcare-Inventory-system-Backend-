@@ -15,6 +15,29 @@ const createAdjustmentSchema = z.object({
   reference: z.string().trim().max(120).nullable().optional()
 });
 
+const bulkAdjustmentSchema = z.object({
+  adjustmentType: z.enum(ADJUSTMENT_TYPES).optional(),
+  reason: z.string().trim().min(3, 'A reason is required').max(500),
+  reference: z.string().trim().max(120).nullable().optional(),
+  lines: z
+    .array(
+      z.object({
+        drugId: z.string().uuid('A valid drug id is required'),
+        batchId: z.string().uuid('A valid batch id is required'),
+        quantity: z.coerce
+          .number()
+          .finite('Quantity must be a number')
+          .refine((value) => Math.abs(value) > 0, 'Quantity cannot be zero')
+      })
+    )
+    .min(1, 'Add at least one line')
+    .max(100, 'A stock quantity adjustment can hold at most 100 lines')
+});
+
+const adjustmentGroupParamSchema = z.object({
+  groupId: z.string().uuid('A valid stock quantity adjustment id is required')
+});
+
 const listAdjustmentsQuerySchema = z.object({
   status: z.enum(['pending', 'approved', 'rejected']).optional(),
   drugId: z.string().uuid().optional(),
@@ -81,6 +104,8 @@ const returnIdParamSchema = z.object({
 
 module.exports = {
   createAdjustmentSchema,
+  bulkAdjustmentSchema,
+  adjustmentGroupParamSchema,
   listAdjustmentsQuerySchema,
   adjustmentIdParamSchema,
   reviewSchema,

@@ -19,6 +19,7 @@ const PERMISSIONS = {
   STOCK_DISPENSE: 'stock.dispense',
   STOCK_IMPORT: 'stock.import',
   ADJUSTMENTS_CREATE: 'adjustments.create',
+  ADJUSTMENTS_QUANTITY: 'adjustments.quantity',
   ADJUSTMENTS_APPROVE: 'adjustments.approve',
   RETURNS_REQUEST: 'returns.request',
   RETURNS_APPROVE: 'returns.approve',
@@ -42,7 +43,12 @@ const PERMISSIONS = {
   DELIVERIES_RECEIVE: 'deliveries.receive',
   DISCREPANCIES_CLOSE: 'discrepancies.close',
   THRESHOLDS_APPROVE: 'thresholds.approve',
-  LG_REPORTS_VIEW: 'lg_reports.view'
+  LG_REPORTS_VIEW: 'lg_reports.view',
+  TRANSFERS_VIEW: 'transfers.view',
+  TRANSFERS_REQUEST: 'transfers.request',
+  TRANSFERS_APPROVE: 'transfers.approve',
+  TRANSFERS_RECEIVE: 'transfers.receive',
+  TRANSFERS_CANCEL: 'transfers.cancel'
 };
 
 const PERMISSION_DEFINITIONS = [
@@ -58,6 +64,7 @@ const PERMISSION_DEFINITIONS = [
   { code: PERMISSIONS.STOCK_DISPENSE, name: 'Dispense stock', description: 'Record dispensing events' },
   { code: PERMISSIONS.STOCK_IMPORT, name: 'Import stock', description: 'Import opening or received stock from files' },
   { code: PERMISSIONS.ADJUSTMENTS_CREATE, name: 'Create stock adjustments', description: 'Request or apply stock adjustments' },
+  { code: PERMISSIONS.ADJUSTMENTS_QUANTITY, name: 'Correct stock quantities', description: 'Create single or bulk quantity corrections to batch stock' },
   { code: PERMISSIONS.ADJUSTMENTS_APPROVE, name: 'Approve stock adjustments', description: 'Approve or reject stock adjustments' },
   { code: PERMISSIONS.RETURNS_REQUEST, name: 'Request returns', description: 'Create stock return requests' },
   { code: PERMISSIONS.RETURNS_APPROVE, name: 'Approve returns', description: 'Approve or reject stock returns' },
@@ -81,7 +88,12 @@ const PERMISSION_DEFINITIONS = [
   { code: PERMISSIONS.DELIVERIES_RECEIVE, name: 'Confirm deliveries', description: 'Confirm delivery receipts and record shortages, damage or rejection' },
   { code: PERMISSIONS.DISCREPANCIES_CLOSE, name: 'Close discrepancies', description: 'Finalize shortages and resolve damaged or rejected stock' },
   { code: PERMISSIONS.THRESHOLDS_APPROVE, name: 'Approve threshold actions', description: 'Approve threshold-gated warehouse receipts, corrections and dispatches' },
-  { code: PERMISSIONS.LG_REPORTS_VIEW, name: 'View LG reports', description: 'View and export local government demand, warehouse and distribution reports' }
+  { code: PERMISSIONS.LG_REPORTS_VIEW, name: 'View LG reports', description: 'View and export local government demand, warehouse and distribution reports' },
+  { code: PERMISSIONS.TRANSFERS_VIEW, name: 'View transfers', description: 'View facility transfer requests and their progress' },
+  { code: PERMISSIONS.TRANSFERS_REQUEST, name: 'Request transfers', description: 'Create transfer requests to neighbouring facilities' },
+  { code: PERMISSIONS.TRANSFERS_APPROVE, name: 'Approve transfers', description: 'Approve or decline transfer requests as the source facility' },
+  { code: PERMISSIONS.TRANSFERS_RECEIVE, name: 'Receive transfers', description: 'Receive transfer shipments and resolve shortages' },
+  { code: PERMISSIONS.TRANSFERS_CANCEL, name: 'Cancel transfers', description: 'Cancel transfer requests before they are received' }
 ];
 
 const LG_ROLE_PERMISSIONS = [
@@ -124,9 +136,8 @@ const ROLE_DEFINITIONS = [
   {
     code: ROLES.ADMINISTRATOR,
     name: 'OIC (Officer In Charge)',
-    description: 'Officer In Charge: runs the healthcare centre, including its staff accounts, stock, requisitions and approvals',
+    description: 'Officer In Charge: runs the healthcare centre, including its stock, requisitions and approvals',
     permissions: [
-      PERMISSIONS.USERS_MANAGE,
       PERMISSIONS.DRUGS_VIEW,
       PERMISSIONS.DRUGS_MANAGE,
       PERMISSIONS.INVENTORY_VIEW,
@@ -134,6 +145,7 @@ const ROLE_DEFINITIONS = [
       PERMISSIONS.STOCK_DISPENSE,
       PERMISSIONS.STOCK_IMPORT,
       PERMISSIONS.ADJUSTMENTS_CREATE,
+      PERMISSIONS.ADJUSTMENTS_QUANTITY,
       PERMISSIONS.ADJUSTMENTS_APPROVE,
       PERMISSIONS.RETURNS_REQUEST,
       PERMISSIONS.RETURNS_APPROVE,
@@ -166,6 +178,11 @@ const ROLE_DEFINITIONS = [
       PERMISSIONS.ADJUSTMENTS_CREATE,
       PERMISSIONS.RETURNS_REQUEST,
       PERMISSIONS.REQUISITIONS_CREATE,
+      PERMISSIONS.TRANSFERS_VIEW,
+      PERMISSIONS.TRANSFERS_REQUEST,
+      PERMISSIONS.TRANSFERS_APPROVE,
+      PERMISSIONS.TRANSFERS_RECEIVE,
+      PERMISSIONS.TRANSFERS_CANCEL,
       PERMISSIONS.EXPIRY_VIEW,
       PERMISSIONS.REPORTS_VIEW,
       PERMISSIONS.NOTIFICATIONS_VIEW

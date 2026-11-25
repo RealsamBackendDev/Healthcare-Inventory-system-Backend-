@@ -12,24 +12,11 @@ const generateReference = () => {
   return `DSP-${date}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 };
 
-const mergeItems = (items) => {
-  const merged = new Map();
-  items.forEach((item) => {
-    const existing = merged.get(item.drugId);
-    if (existing) {
-      existing.quantity = roundQuantity(existing.quantity + Number(item.quantity));
-    } else {
-      merged.set(item.drugId, {
-        drugId: item.drugId,
-        quantity: Number(item.quantity)
-      });
-    }
-  });
-  return [...merged.values()].sort((left, right) => left.drugId.localeCompare(right.drugId));
-};
-
 const dispense = async ({ actor, healthcareCentreId, payload }) => {
-  const items = mergeItems(payload.items);
+  const items = payload.items.map((item) => ({
+    drugId: item.drugId,
+    quantity: Number(item.quantity)
+  }));
 
   return withTransaction(async (client) => {
     const drugs = await repository.findDrugs(
@@ -38,9 +25,17 @@ const dispense = async ({ actor, healthcareCentreId, payload }) => {
       items.map((item) => item.drugId)
     );
     const drugsById = new Map(drugs.map((drug) => [drug.id, drug]));
+    const seenDrugIds = new Set();
 
     items.forEach((item, index) => {
       const drug = drugsById.get(item.drugId);
+      if (seenDrugIds.has(item.drugId)) {
+        throw new ValidationError(
+          `${drug ? drug.name : 'This drug'} is on more than one line. Put it on a single line with the total quantity.`,
+          [{ field: `items.${index}.drugId`, message: 'This drug is already on the list' }]
+        );
+      }
+      seenDrugIds.add(item.drugId);
       if (!drug) {
         throw new ValidationError('One or more dispensing rows reference an unknown drug', [
           { field: `items.${index}.drugId`, message: 'Drug is not available in this healthcare centre' }

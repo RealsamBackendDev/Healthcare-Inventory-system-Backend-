@@ -183,12 +183,28 @@ const createReceipt = async ({
     );
     const drugsById = new Map(drugs.map((drug) => [drug.id, drug]));
 
-    items.forEach((item, index) => {
+    for (const [index, item] of items.entries()) {
       const drug = drugsById.get(item.drugId);
-      if (!drug || !drug.is_active) {
-        throw new ValidationError('One or more receipt rows reference an unknown or inactive drug', [
-          { field: `items.${index}.drugId`, message: 'Drug is not available in this healthcare centre' }
+      if (!drug) {
+        const known = await repository.findDrugForReceipt(client, healthcareCentreId, item.drugId);
+        const label = known ? `${known.name} (${known.code})` : null;
+        let reason;
+        if (!known) {
+          reason = `This row's drug could not be found, so batch ${item.batchNumber} was not received. Refresh the page, pick the drug again and re-add the batch`;
+        } else if (known.in_centre_lg) {
+          reason = `${label} is not available at this centre, so batch ${item.batchNumber} was not received. Add the drug to this centre first`;
+        } else {
+          reason = `${label} is registered under a different local government, so batch ${item.batchNumber} was not received`;
+        }
+        throw new ValidationError(reason, [
+          { field: `items.${index}.drugId`, message: 'Refresh the page and pick the drug again' }
         ]);
+      }
+      if (!drug.is_active) {
+        throw new ValidationError(
+          `${drug.name} (${drug.code}) is inactive, so batch ${item.batchNumber} cannot be received`,
+          [{ field: `items.${index}.drugId`, message: 'Activate this drug in the catalogue first' }]
+        );
       }
       if (isCountableUnit(drug.unit_of_measure) && !isWholeQuantity(item.quantity)) {
         throw new ValidationError(
@@ -196,7 +212,7 @@ const createReceipt = async ({
           [{ field: `items.${index}.quantity`, message: 'Enter a whole number' }]
         );
       }
-    });
+    }
 
     const reference = receiptReference || payload.receiptReference || generateReference(source === 'import' ? 'IMP' : 'RCV');
 

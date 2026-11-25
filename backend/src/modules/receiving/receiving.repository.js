@@ -3,9 +3,14 @@ const { query } = require('../../database/connection');
 const findActiveDrugs = async (client, healthcareCentreId, drugIds) => {
   const executor = client || { query };
   const { rows } = await executor.query(
-    `SELECT id, code, name, unit_of_measure, is_active
-       FROM drugs
-      WHERE healthcare_centre_id = $1 AND id = ANY($2::uuid[])`,
+    `SELECT d.id, d.code, d.name, d.unit_of_measure,
+            COALESCE(fds.is_active, d.is_active) AS is_active
+       FROM drugs d
+       JOIN healthcare_centres hc ON hc.id = $1
+       LEFT JOIN facility_drug_settings fds
+              ON fds.drug_id = d.id AND fds.healthcare_centre_id = $1
+      WHERE d.local_government_id = hc.local_government_id
+        AND d.id = ANY($2::uuid[])`,
     [healthcareCentreId, drugIds]
   );
   return rows;
@@ -13,10 +18,27 @@ const findActiveDrugs = async (client, healthcareCentreId, drugIds) => {
 
 const listActiveDrugCatalogue = async (healthcareCentreId) => {
   const { rows } = await query(
-    'SELECT id, code, name, unit_of_measure FROM drugs WHERE healthcare_centre_id = $1 AND is_active = TRUE',
+    `SELECT d.id, d.code, d.name, d.unit_of_measure
+       FROM drugs d
+       JOIN healthcare_centres hc ON hc.id = $1
+      WHERE d.local_government_id = hc.local_government_id
+        AND d.is_active = TRUE`,
     [healthcareCentreId]
   );
   return rows;
+};
+
+const findDrugForReceipt = async (client, healthcareCentreId, drugId) => {
+  const executor = client || { query };
+  const { rows } = await executor.query(
+    `SELECT d.id, d.code, d.name,
+            (d.local_government_id = hc.local_government_id) AS in_centre_lg
+       FROM drugs d
+       CROSS JOIN healthcare_centres hc
+      WHERE hc.id = $1 AND d.id = $2`,
+    [healthcareCentreId, drugId]
+  );
+  return rows[0] || null;
 };
 
 const findBatchForUpdate = async (client, { healthcareCentreId, drugId, batchNumber }) => {
@@ -216,6 +238,7 @@ module.exports = {
   findFacilityLocation,
   findReceiptByKey,
   listActiveDrugCatalogue,
+  findDrugForReceipt,
   findBatchForUpdate,
   insertBatch,
   updateBatchAfterReceipt,

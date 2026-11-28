@@ -142,9 +142,20 @@ const listDamagedStock = async ({ scope }) => {
     healthcareCentreId,
     limit: 20
   });
+  const usableRows = await repository.listUsableBatches({ query }, healthcareCentreId);
 
   return {
     items,
+    availableBatches: usableRows.map((row) => ({
+      batchId: row.id,
+      drugId: row.drug_id,
+      drugName: row.drug_name,
+      drugCode: row.drug_code,
+      unitOfMeasure: row.unit_of_measure,
+      batchNumber: row.batch_number,
+      expiryDate: isoDateOf(row.expiry_date),
+      quantity: roundQuantity(Number(row.quantity || 0))
+    })),
     totalQuantity: roundQuantity(items.reduce((sum, item) => sum + item.quantity, 0)),
     overdueCount: items.filter((item) => item.overdue).length,
     expiredCount: items.filter((item) => item.expired).length,
@@ -163,6 +174,151 @@ const listReturnsInTransit = async ({ scope }) => {
     totalQuantity: roundQuantity(items.reduce((sum, item) => sum + item.quantity, 0)),
     expiredCount: items.filter((item) => item.expired).length
   };
+};
+
+const markDamaged = async ({ actor, scope, batchId, payload }) => {
+  const healthcareCentreId = requireFacilityScope(scope);
+
+  const location = await repository.findFacilityLocation({ query }, healthcareCentreId);
+  if (!location) {
+    throw new NotFoundError('This healthcare centre has no active store location');
+  }
+
+  return withTransaction(async (client) => {
+    const batch = await repository.lockBatch(client, batchId, healthcareCentreId);
+    if (!batch) {
+      throw new NotFoundError('That batch was not found in this facility');
+    }
+    if (batch.status !== 'usable') {
+      throw new ConflictError(
+        `That batch is marked ${batch.status}, so only usable stock can be moved into quarantine`,
+        'DAMAGE_NOT_USABLE'
+      );
+    }
+
+    const available = roundQuantity(Number(batch.quantity || 0));
+    if (!isPositive(available)) {
+      throw new ConflictError('That batch has nothing left to move', 'DAMAGE_BATCH_EMPTY');
+    }
+
+    const quantity = roundQuantity(Number(payload.quantity));
+    if (!Number.isFinite(quantity) || !isPositive(quantity)) {
+      throw new ValidationError('Enter how many units are damaged', [
+        { field: 'quantity', message: 'Enter a quantity greater than zero' }
+      ]);
+    }
+    if (quantity > available + QUANTITY_EPSILON) {
+      throw new ValidationError(
+        `Only ${available} ${batch.unit_of_measure} of ${batch.drug_name} is on hand in that batch`,
+        [{ field: 'quantity', message: 'The damaged quantity cannot be more than the batch holds' }]
+      );
+    }
+    if (isCountableUnit(batch.unit_of_measure) && !isWholeQuantity(quantity)) {
+      throw new ValidationError(`${batch.drug_name} is counted in whole ${batch.unit_of_measure}`, [
+        { field: 'quantity', message: 'Enter a whole number for this unit' }
+      ]);
+    }
+
+    const expiryDate = isoDateOf(batch.expiry_date);
+    const lotNumber = `${lotNumberOf(batch.batch_number)}-Q`;
+    const existing = await repository.findLotBatch(client, {
+      stockLocationId: batch.stock_location_id,
+      drugId: batch.drug_id,
+      batchNumber: lotNumber
+    });
+    const reusableQuarantine =
+      existing &&
+      (existing.status === 'quarantined' ||
+        (existing.status === 'destroyed' && !isPositive(existing.quantity)));
+    if (existing && !reusableQuarantine) {
+      throw new ConflictError(
+        `Lot ${lotNumber} is already held in this store as ${existing.status}, so it cannot take this stock`,
+        'DAMAGE_QUARANTINE_BLOCKED'
+      );
+    }
+    if (existing && isoDateOf(existing.expiry_date) !== expiryDate) {
+      throw new ConflictError(
+        `Lot ${lotNumber} is already held with a different expiry date`,
+        'DAMAGE_QUARANTINE_MISMATCH'
+      );
+    }
+
+    const quarantined = await repository.insertQuarantinedBatch(client, {
+      healthcareCentreId,
+      localGovernmentId: location.local_government_id,
+      stockLocationId: batch.stock_location_id,
+      drugId: batch.drug_id,
+      batchNumber: lotNumber,
+      expiryDate,
+      quantity,
+      unitCost: batch.unit_cost,
+      supplierReference: batch.supplier_reference
+    });
+
+    const remaining = roundQuantity(available - quantity);
+    await repository.updateBatchQuantity(client, {
+      batchId: batch.id,
+      quantity: remaining,
+      status: remaining > QUANTITY_EPSILON ? 'usable' : 'destroyed'
+    });
+
+    await repository.insertMovement(client, {
+      healthcareCentreId,
+      drugId: batch.drug_id,
+      batchId: batch.id,
+      movementType: 'quarantine',
+      quantity: -quantity,
+      reason: `Damaged stock moved into quarantine - ${payload.reason}`,
+      actorId: actor.id,
+      actorName: actor.fullName,
+      sourceReference: batch.supplier_reference
+    });
+
+    await repository.insertMovement(client, {
+      healthcareCentreId,
+      drugId: batch.drug_id,
+      batchId: quarantined.id,
+      movementType: 'quarantine',
+      quantity,
+      reason: `Damaged stock held in quarantine lot ${lotNumber} - ${payload.reason}`,
+      actorId: actor.id,
+      actorName: actor.fullName,
+      sourceReference: batch.supplier_reference
+    });
+
+    await recordAudit(client, {
+      healthcareCentreId,
+      localGovernmentId: location.local_government_id,
+      actor,
+      actorRoleCode: scope.roleCode,
+      actorScopeType: scope.scopeType,
+      action: 'damage.quarantined',
+      entityType: 'batch',
+      entityId: quarantined.id,
+      summary: `Moved ${quantity} ${batch.drug_name} from lot ${batch.batch_number} into quarantine`,
+      newValues: {
+        sourceBatchId: batch.id,
+        sourceBatchNumber: batch.batch_number,
+        quarantineBatchId: quarantined.id,
+        quarantineBatchNumber: lotNumber,
+        quantity,
+        remainingQuantity: remaining,
+        reason: payload.reason,
+        sourceReference: batch.supplier_reference || null
+      }
+    });
+
+    return {
+      batchId: quarantined.id,
+      sourceBatchId: batch.id,
+      batchNumber: lotNumber,
+      sourceBatchNumber: batch.batch_number,
+      drugName: batch.drug_name,
+      unitOfMeasure: batch.unit_of_measure,
+      quantity,
+      remainingQuantity: remaining
+    };
+  });
 };
 
 const recordDisposition = async ({ actor, scope, batchId, payload }) => {
@@ -659,6 +815,7 @@ const confirmReturn = async ({ actor, scope, batchId, payload }) => {
 module.exports = {
   listDamagedStock,
   listReturnsInTransit,
+  markDamaged,
   recordDisposition,
   confirmReturn,
   QUARANTINE_WINDOW_DAYS

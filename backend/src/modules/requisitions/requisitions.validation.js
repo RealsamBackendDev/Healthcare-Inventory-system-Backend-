@@ -21,7 +21,7 @@ const updateRequisitionSchema = z
 
 const listRequisitionsQuerySchema = z.object({
   status: z
-    .enum(['draft', 'pending_approval', 'approved', 'rejected', 'cancelled', 'closed'])
+    .enum(['draft', 'pending_oic', 'pending_approval', 'approved', 'rejected', 'cancelled', 'closed'])
     .optional(),
   search: z.string().trim().max(120).optional(),
   from: z.string().trim().max(40).optional(),
@@ -41,7 +41,12 @@ const suggestedItemSchema = z.object({
 
 const reviewRequisitionSchema = z.object({
   comment: z.string().trim().max(500).nullable().optional(),
-  items: z.array(suggestedItemSchema).min(1, 'Add at least one suggested quantity').max(200)
+  items: z.array(suggestedItemSchema).max(200).optional()
+});
+
+const approveRequisitionSchema = z.object({
+  comment: z.string().trim().max(500).nullable().optional(),
+  items: z.array(requisitionItemSchema).max(200).optional()
 });
 
 const rejectRequisitionSchema = z.object({
@@ -58,6 +63,7 @@ module.exports = {
   listRequisitionsQuerySchema,
   requisitionIdParamSchema,
   reviewRequisitionSchema,
+  approveRequisitionSchema,
   rejectRequisitionSchema,
   cancelRequisitionSchema
 };

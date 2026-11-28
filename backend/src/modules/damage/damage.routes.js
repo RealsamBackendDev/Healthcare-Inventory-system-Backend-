@@ -23,6 +23,14 @@ router.get(
 );
 
 router.post(
+  '/stock/damage/:batchId/quarantine',
+  authenticate,
+  authorize(PERMISSIONS.ADJUSTMENTS_CREATE),
+  validate({ params: schemas.batchIdParamSchema, body: schemas.quarantineSchema }),
+  controller.markDamaged
+);
+
+router.post(
   '/stock/damage/:batchId/disposition',
   authenticate,
   authorize(PERMISSIONS.ADJUSTMENTS_CREATE),

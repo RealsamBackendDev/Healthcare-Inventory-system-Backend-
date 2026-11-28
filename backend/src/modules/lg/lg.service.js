@@ -495,54 +495,55 @@ const reviewRequisition = async ({ actor, scope, requisitionId, decision, commen
 
     const approved = decision === 'approved';
 
-    if (approved) {
-      const suggestions = await repository.listRequisitionItems(requisitionId);
-      const seeded = suggestions
-        .filter((item) => item.suggested_quantity !== null && item.suggested_quantity !== undefined)
-        .map((item) => ({ drugId: item.drug_id, approvedQuantity: Number(item.suggested_quantity) }));
-      if (seeded.length > 0) {
-        await repository.updateApprovedQuantities(client, { requisitionId, items: seeded });
-      }
-    }
-
     if (approved && Array.isArray(items) && items.length > 0) {
-      const currentItems = await repository.listRequisitionItems(requisitionId);
-      const byDrug = new Map(currentItems.map((item) => [item.drug_id, item]));
-      const updates = [];
+      const seen = new Set();
+      const finalItems = [];
 
       for (const entry of items) {
-        const item = byDrug.get(entry.drugId);
-        if (!item) {
-          throw new ValidationError('Only drugs on the requisition can be approved', [
-            { field: 'items.drugId', message: 'This drug is not on the requisition' }
+        if (seen.has(entry.drugId)) {
+          throw new ValidationError('Each drug can only appear once', [
+            { field: 'items.drugId', message: 'Remove the duplicate line' }
           ]);
         }
+        seen.add(entry.drugId);
+
         const quantity = roundQuantity(Number(entry.approvedQuantity));
         if (!Number.isFinite(quantity) || quantity < 0) {
           throw new ValidationError('Approved quantities cannot be negative', [
             { field: 'items.approvedQuantity', message: 'Enter zero or more' }
           ]);
         }
-        if (quantity > Number(item.requested_quantity) + QUANTITY_EPSILON) {
-          throw new ValidationError('Approved quantity cannot exceed the requested quantity', [
-            { field: 'items.approvedQuantity', message: 'Lower it to the requested amount or below' }
-          ]);
+        if (quantity > QUANTITY_EPSILON) {
+          finalItems.push({ drugId: entry.drugId, approvedQuantity: quantity });
         }
-        updates.push({ drugId: entry.drugId, approvedQuantity: quantity });
       }
 
-      const totalApproved = currentItems.reduce((total, item) => {
-        const update = updates.find((entry) => entry.drugId === item.drug_id);
-        return total + (update ? update.approvedQuantity : Number(item.requested_quantity));
-      }, 0);
-
-      if (totalApproved <= QUANTITY_EPSILON) {
+      if (finalItems.length === 0) {
         throw new ValidationError('Approve at least one unit, or reject the requisition instead', [
           { field: 'items', message: 'Every approved quantity is zero' }
         ]);
       }
 
-      await repository.updateApprovedQuantities(client, { requisitionId, items: updates });
+      const currentItems = await repository.listRequisitionItems(requisitionId);
+      const onRequisition = new Set(currentItems.map((item) => item.drug_id));
+      const added = finalItems.filter((entry) => !onRequisition.has(entry.drugId));
+
+      if (added.length > 0) {
+        const catalogue = await repository.listActiveDrugsInLocalGovernment(
+          client,
+          localGovernmentId,
+          added.map((entry) => entry.drugId)
+        );
+        const allowed = new Set(catalogue.map((drug) => drug.id));
+        const unknown = added.find((entry) => !allowed.has(entry.drugId));
+        if (unknown) {
+          throw new ValidationError('Only active drugs in this local government can be added', [
+            { field: 'items.drugId', message: 'Pick a drug from the catalogue' }
+          ]);
+        }
+      }
+
+      await repository.replaceApprovedItems(client, { requisitionId, items: finalItems });
     }
     await repository.markReviewed(client, {
       localGovernmentId,

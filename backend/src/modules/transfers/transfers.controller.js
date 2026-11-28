@@ -50,6 +50,25 @@ const approveRequest = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
+const endorseRequest = asyncHandler(async (req, res) => {
+  const result = await service.endorseRequest({
+    actor: req.user,
+    scope: req.scope,
+    requestId: req.params.requestId,
+    note: req.body.note
+  });
+  res.json({ success: true, data: result });
+});
+
+const sendStock = asyncHandler(async (req, res) => {
+  const result = await service.sendStock({
+    actor: req.user,
+    scope: req.scope,
+    payload: req.body
+  });
+  res.status(201).json({ success: true, data: result });
+});
+
 const declineRequest = asyncHandler(async (req, res) => {
   const result = await service.declineRequest({
     actor: req.user,
@@ -102,6 +121,8 @@ module.exports = {
   listRequests,
   getRequest,
   approveRequest,
+  endorseRequest,
+  sendStock,
   declineRequest,
   receiveRequest,
   resolveShortage,

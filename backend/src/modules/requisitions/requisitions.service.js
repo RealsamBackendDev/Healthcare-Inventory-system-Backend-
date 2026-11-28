@@ -6,13 +6,15 @@ const { parseDateInput, todayIsoDate } = require('../../shared/utils/date');
 const { recordAudit } = require('../../shared/utils/audit');
 const { getPagination, buildPaginationMeta } = require('../../shared/utils/pagination');
 const {
-  QUANTITY_EPSILON,
   ROLES,
   REQUISITION_STATUS,
   PERMISSIONS,
   NOTIFICATION_TYPES
 } = require('../../shared/constants');
-const { notifyLocalGovernmentMembers } = require('../../shared/utils/notifications');
+const {
+  notifyCentreMembers,
+  notifyLocalGovernmentMembers
+} = require('../../shared/utils/notifications');
 const repository = require('./requisitions.repository');
 
 const generateRequisitionNumber = () => {
@@ -360,14 +362,22 @@ const submitRequisition = async ({ actor, roleCode, healthcareCentreId, requisit
       throw new ConflictError('Add at least one drug before submitting', 'REQUISITION_EMPTY');
     }
 
-    const updated = await repository.markSubmitted(client, requisitionId);
+    const isOic = roleCode === ROLES.ADMINISTRATOR;
+
+    const updated = await repository.markSubmitted(
+      client,
+      requisitionId,
+      isOic ? REQUISITION_STATUS.PENDING_APPROVAL : REQUISITION_STATUS.PENDING_OIC
+    );
 
     await repository.insertEvent(client, {
       requisitionId,
-      eventType: 'submitted',
+      eventType: isOic ? 'oic_approved' : 'submitted',
       actorId: actor.id,
       actorName: actor.fullName,
-      comment: 'Submitted for approval'
+      comment: isOic
+        ? 'Approved by the OIC and sent to the Logistician'
+        : 'Submitted for OIC approval'
     });
 
     await recordAudit(client, {
@@ -376,9 +386,78 @@ const submitRequisition = async ({ actor, roleCode, healthcareCentreId, requisit
       action: 'requisition.submitted',
       entityType: 'requisition',
       entityId: requisitionId,
-      summary: `Submitted requisition ${updated.requisition_number} for approval`,
+      summary: `Submitted requisition ${updated.requisition_number}${isOic ? ' and self-approved it' : ' for OIC approval'}`,
       previousValues: { status: requisition.status },
       newValues: { status: updated.status, totalQuantity: items.reduce((total, item) => total + Number(item.requested_quantity), 0) }
+    });
+
+    if (isOic) {
+      await notifyLocalGovernmentMembers(client, {
+        localGovernmentId: requisition.local_government_id,
+        permissionCode: PERMISSIONS.REQUISITIONS_LG_REVIEW,
+        excludeUserId: actor.id,
+        type: NOTIFICATION_TYPES.REQUISITION_PENDING,
+        title: 'Requisition submitted',
+        message: `${updated.requisition_number} is waiting for local government review`,
+        entityType: 'requisition',
+        entityId: requisitionId
+      });
+    } else {
+      await notifyCentreMembers(client, {
+        healthcareCentreId,
+        excludeUserId: actor.id,
+        type: NOTIFICATION_TYPES.REQUISITION_PENDING,
+        title: 'Requisition waiting for OIC approval',
+        message: `${updated.requisition_number} needs OIC approval before it goes to the local government`,
+        entityType: 'requisition',
+        entityId: requisitionId
+      });
+    }
+  });
+
+  return loadDetail(healthcareCentreId, requisitionId);
+};
+
+const approveRequisition = async ({ actor, healthcareCentreId, requisitionId, items: requestedItems }) => {
+  await withTransaction(async (client) => {
+    const requisition = await repository.lockRequisition(client, healthcareCentreId, requisitionId);
+    if (!requisition) {
+      throw new NotFoundError('Requisition was not found');
+    }
+    if (requisition.status !== REQUISITION_STATUS.PENDING_OIC) {
+      throw new ConflictError(
+        'Only requisitions waiting for OIC approval can be approved',
+        'REQUISITION_NOT_PENDING_OIC'
+      );
+    }
+
+    let items = null;
+    if (Array.isArray(requestedItems) && requestedItems.length > 0) {
+      items = await validateItems(client, healthcareCentreId, requestedItems);
+      await repository.replaceItems(client, { requisitionId, items });
+    }
+
+    const updated = await repository.markOicApproved(client, requisitionId);
+
+    await repository.insertEvent(client, {
+      requisitionId,
+      eventType: 'oic_approved',
+      actorId: actor.id,
+      actorName: actor.fullName,
+      comment: items
+        ? 'Approved by the OIC with adjusted quantities and sent to the Logistician'
+        : 'Approved by the OIC and sent to the Logistician'
+    });
+
+    await recordAudit(client, {
+      healthcareCentreId,
+      actor,
+      action: 'requisition.oic_approved',
+      entityType: 'requisition',
+      entityId: requisitionId,
+      summary: `Approved requisition ${requisition.requisition_number} and sent it to the Logistician`,
+      previousValues: { status: requisition.status },
+      newValues: { status: updated.status, items }
     });
 
     await notifyLocalGovernmentMembers(client, {
@@ -396,83 +475,17 @@ const submitRequisition = async ({ actor, roleCode, healthcareCentreId, requisit
   return loadDetail(healthcareCentreId, requisitionId);
 };
 
-const approveRequisition = async ({ actor, healthcareCentreId, requisitionId, comment, items }) => {
-  if (!Array.isArray(items) || items.length === 0) {
-    throw new ValidationError('Enter a suggested quantity for at least one drug', [
-      { field: 'items', message: 'Suggested quantities are required' }
-    ]);
-  }
-
-  await withTransaction(async (client) => {
-    const requisition = await repository.lockRequisition(client, healthcareCentreId, requisitionId);
-    if (!requisition) {
-      throw new NotFoundError('Requisition was not found');
-    }
-    if (requisition.status !== REQUISITION_STATUS.PENDING_APPROVAL) {
-      throw new ConflictError(
-        'Only requisitions waiting for local government approval can take suggestions',
-        'REQUISITION_NOT_PENDING'
-      );
-    }
-
-    const currentItems = await repository.listItems(requisitionId);
-    const byDrug = new Map(currentItems.map((item) => [item.drug_id, item]));
-    const updates = [];
-
-    for (const entry of items) {
-      const item = byDrug.get(entry.drugId);
-      if (!item) {
-        throw new ValidationError('Only drugs on the requisition can be suggested', [
-          { field: 'items.drugId', message: 'This drug is not on the requisition' }
-        ]);
-      }
-      const quantity = roundQuantity(Number(entry.quantity));
-      if (!Number.isFinite(quantity) || quantity < 0) {
-        throw new ValidationError('Suggested quantities cannot be negative', [
-          { field: 'items.quantity', message: 'Enter zero or more' }
-        ]);
-      }
-      if (quantity > Number(item.requested_quantity) + QUANTITY_EPSILON) {
-        throw new ValidationError('A suggestion cannot exceed the requested quantity', [
-          { field: 'items.quantity', message: 'Lower it to the requested amount or below' }
-        ]);
-      }
-      updates.push({ drugId: entry.drugId, quantity });
-    }
-
-    await repository.updateSuggestedQuantities(client, { requisitionId, items: updates });
-
-    await repository.insertEvent(client, {
-      requisitionId,
-      eventType: 'quantities_suggested',
-      actorId: actor.id,
-      actorName: actor.fullName,
-      comment: comment || 'Suggested quantities sent to the local government'
-    });
-
-    await recordAudit(client, {
-      healthcareCentreId,
-      actor,
-      action: 'requisition.quantities_suggested',
-      entityType: 'requisition',
-      entityId: requisitionId,
-      summary: `Suggested quantities for ${requisition.requisition_number}`,
-      previousValues: { status: requisition.status },
-      newValues: { status: requisition.status, items: updates },
-      reason: comment || null
-    });
-  });
-
-  return loadDetail(healthcareCentreId, requisitionId);
-};
-
 const rejectRequisition = async ({ actor, healthcareCentreId, requisitionId, reason }) => {
   await withTransaction(async (client) => {
     const requisition = await repository.lockRequisition(client, healthcareCentreId, requisitionId);
     if (!requisition) {
       throw new NotFoundError('Requisition was not found');
     }
-    if (requisition.status !== REQUISITION_STATUS.PENDING_APPROVAL) {
+    if (
+      ![REQUISITION_STATUS.PENDING_OIC, REQUISITION_STATUS.PENDING_APPROVAL].includes(
+        requisition.status
+      )
+    ) {
       throw new ConflictError('Only requisitions pending approval can be rejected', 'REQUISITION_NOT_PENDING');
     }
 
@@ -514,7 +527,11 @@ const cancelRequisition = async ({ actor, roleCode, healthcareCentreId, requisit
     if (!requisition) {
       throw new NotFoundError('Requisition was not found');
     }
-    if (![REQUISITION_STATUS.DRAFT, REQUISITION_STATUS.PENDING_APPROVAL].includes(requisition.status)) {
+    if (
+      ![REQUISITION_STATUS.DRAFT, REQUISITION_STATUS.PENDING_OIC, REQUISITION_STATUS.PENDING_APPROVAL].includes(
+        requisition.status
+      )
+    ) {
       throw new ConflictError(
         'Only draft or pending requisitions can be cancelled',
         'REQUISITION_NOT_CANCELLABLE'

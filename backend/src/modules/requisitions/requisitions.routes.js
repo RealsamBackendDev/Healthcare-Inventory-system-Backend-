@@ -75,7 +75,7 @@ router.post(
   '/requisitions/:requisitionId/approve',
   authenticate,
   authorize(PERMISSIONS.REQUISITIONS_APPROVE),
-  validate({ params: schemas.requisitionIdParamSchema, body: schemas.reviewRequisitionSchema }),
+  validate({ params: schemas.requisitionIdParamSchema, body: schemas.approveRequisitionSchema }),
   controller.approveRequisition
 );
 
@@ -122,7 +122,7 @@ router.post(
   '/deliveries/:dispatchId/receive',
   authenticate,
   authorize(PERMISSIONS.DELIVERIES_RECEIVE),
-  validate({ params: lgSchemas.dispatchIdParamSchema, body: lgSchemas.receiveDeliverySchema }),
+  validate({ params: lgSchemas.dispatchIdParamSchema, body: schemas.receiveDeliverySchema }),
   controller.receiveDispatchDelivery
 );
 
@@ -140,6 +140,29 @@ router.post(
   authorize(PERMISSIONS.DELIVERIES_RECEIVE),
   validate({ params: schemas.requisitionIdParamSchema, body: lgSchemas.receiveDeliverySchema }),
   controller.receiveDelivery
+);
+
+router.get(
+  '/transfers/incoming',
+  authenticate,
+  authorize(PERMISSIONS.DELIVERIES_RECEIVE),
+  controller.listIncomingTransfers
+);
+
+router.get(
+  '/transfers/:transferId',
+  authenticate,
+  authorize(PERMISSIONS.DELIVERIES_RECEIVE),
+  validate({ params: lgSchemas.transferIdParamSchema }),
+  controller.getTransferDetail
+);
+
+router.post(
+  '/transfers/:transferId/receive',
+  authenticate,
+  authorize(PERMISSIONS.DELIVERIES_RECEIVE),
+  validate({ params: lgSchemas.transferIdParamSchema, body: lgSchemas.receiveTransferSchema }),
+  controller.receiveTransfer
 );
 
 router.post(

@@ -14,8 +14,22 @@ const createRequestSchema = z.object({
     .max(50)
 });
 
+const sendStockSchema = z.object({
+  toCentreId: z.string().uuid('Choose a facility to send to'),
+  note: z.string().trim().max(500).nullable().optional(),
+  items: z
+    .array(
+      z.object({
+        drugId: z.string().uuid('A valid drug id is required'),
+        quantity: z.coerce.number().positive('Quantity must be greater than zero').max(1000000000)
+      })
+    )
+    .min(1, 'Add at least one drug')
+    .max(50)
+});
+
 const listRequestsQuerySchema = z.object({
-  direction: z.enum(['outgoing', 'incoming']).optional()
+  direction: z.enum(['outgoing', 'incoming', 'endorse']).optional()
 });
 
 const requestIdParamSchema = z.object({
@@ -28,6 +42,10 @@ const facilityIdParamSchema = z.object({
 
 const decisionSchema = z.object({
   clientRequestId: z.string().trim().min(8).max(80).optional(),
+  note: z.string().trim().max(500).nullable().optional()
+});
+
+const endorseSchema = z.object({
   note: z.string().trim().max(500).nullable().optional()
 });
 
@@ -72,6 +90,8 @@ const cancelSchema = z.object({
 
 module.exports = {
   createRequestSchema,
+  sendStockSchema,
+  endorseSchema,
   listRequestsQuerySchema,
   requestIdParamSchema,
   facilityIdParamSchema,

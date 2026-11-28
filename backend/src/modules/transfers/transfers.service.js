@@ -9,7 +9,7 @@ const {
 const { roundQuantity, isPositive, isCountableUnit, isWholeQuantity } = require('../../shared/utils/numbers');
 const { todayIsoDate } = require('../../shared/utils/date');
 const { recordAudit } = require('../../shared/utils/audit');
-const { QUANTITY_EPSILON } = require('../../shared/constants');
+const { QUANTITY_EPSILON, ROLES } = require('../../shared/constants');
 const repository = require('./transfers.repository');
 const transitRepository = require('../lg/lg.repository');
 
@@ -19,6 +19,10 @@ const requireFacilityScope = (scope) => {
   }
   return scope.healthcareCentreId;
 };
+
+const isOic = (scope) =>
+  Boolean(scope) &&
+  (scope.roleCode === ROLES.ADMINISTRATOR || scope.roleCode === ROLES.SYSTEM_ADMIN);
 
 const buildNumber = (prefix) => {
   const date = todayIsoDate().replace(/-/g, '');
@@ -37,8 +41,12 @@ const mapRequest = (row) => ({
   requestNote: row.request_note,
   itemCount: Number(row.item_count),
   totalQuantity: roundQuantity(Number(row.total_quantity)),
+  direction: row.my_direction || 'in',
+  requestedById: row.requested_by || null,
   requestedByName: row.requested_by_name,
   requestedAt: row.requested_at,
+  endorsedByName: row.endorsed_by_name || null,
+  endorsedAt: row.endorsed_at || null,
   decidedByName: row.decided_by_name,
   decidedAt: row.decided_at,
   decisionNote: row.decision_note,
@@ -224,6 +232,32 @@ const createRequest = async ({ actor, scope, payload }) => {
     }
   });
 
+  const sourceLocation = await repository.findFacilityLocation(source.id);
+  if (!sourceLocation) {
+    throw new NotFoundError(
+      `${source.name} has no active store location, so it cannot send stock`,
+      'FACILITY_LOCATION_MISSING'
+    );
+  }
+  const sourceStock = await repository.listFacilityStock(sourceLocation.id);
+  const availableByDrug = new Map(
+    sourceStock.map((row) => [row.drug_id, roundQuantity(Number(row.quantity))])
+  );
+  for (const [drugId, quantity] of wanted.entries()) {
+    const drug = drugsById.get(drugId);
+    const onHand = availableByDrug.get(drugId) || 0;
+    if (quantity > onHand + QUANTITY_EPSILON) {
+      throw new ValidationError(
+        `${source.name} only has ${roundQuantity(onHand)} ${
+          drug.unit_of_measure || 'units'
+        } of ${drug.name} available, so the quantity cannot go above that`,
+        [{ field: 'items', message: `Ask for ${roundQuantity(onHand)} or less` }]
+      );
+    }
+  }
+
+  const needsEndorsement = !isOic(scope);
+
   const totalQuantity = roundQuantity(
     [...wanted.values()].reduce((total, quantity) => total + quantity, 0)
   );
@@ -232,6 +266,7 @@ const createRequest = async ({ actor, scope, payload }) => {
     const row = await repository.insertRequest(client, {
       localGovernmentId: mine.local_government_id,
       transferNumber: buildNumber('TRQ'),
+      status: needsEndorsement ? 'pending_approval' : 'requested',
       fromCentreId: source.id,
       fromCentreName: source.name,
       toCentreId: mine.id,
@@ -272,7 +307,9 @@ const listRequests = async ({ scope, direction }) => {
   const rows =
     direction === 'incoming'
       ? await repository.listIncomingRequests(healthcareCentreId)
-      : await repository.listOutgoingRequests(healthcareCentreId);
+      : direction === 'endorse'
+        ? await repository.listEndorsementRequests(healthcareCentreId)
+        : await repository.listOutgoingRequests(healthcareCentreId);
   return rows.map(mapRequest);
 };
 
@@ -296,6 +333,93 @@ const getRequestDetail = async ({ scope, requestId }) => {
     batches: transferLines.map(mapTransferLine),
     receipts: receipts.map(mapReceipt)
   };
+};
+
+const releaseStockToTransit = async (client, { actor, locked, location, requestItems }) => {
+  const lines = [];
+  for (const item of requestItems) {
+    const batches = await repository.lockAvailableBatches(client, location.id, item.drug_id);
+    const { allocations, remaining } = allocateBatches(batches, Number(item.quantity));
+
+    if (remaining > QUANTITY_EPSILON) {
+      throw new ConflictError(
+        `Not enough ${item.name} in your store (short by ${roundQuantity(remaining)})`,
+        'INSUFFICIENT_FACILITY_STOCK'
+      );
+    }
+
+    for (const allocation of allocations) {
+      const updated = await repository.decrementBatch(
+        client,
+        allocation.batch.id,
+        allocation.quantity
+      );
+      if (!updated) {
+        throw new ConflictError('Stock changed while releasing, try again', 'TRANSFER_STOCK_CHANGED');
+      }
+      lines.push({
+        drugId: item.drug_id,
+        sourceBatchId: allocation.batch.id,
+        batchNumber: allocation.batch.batch_number,
+        expiryDate: allocation.batch.expiry_date,
+        quantity: allocation.quantity,
+        unitCost: allocation.batch.unit_cost
+      });
+    }
+  }
+
+  const totalQuantity = roundQuantity(
+    lines.reduce((total, line) => total + line.quantity, 0)
+  );
+
+  const transit = await transitRepository.findOrCreateTransitLocation(
+    client,
+    location.local_government_id
+  );
+
+  for (const line of lines) {
+    const transitBatch = await transitRepository.insertTransitBatch(client, {
+      localGovernmentId: location.local_government_id,
+      stockLocationId: transit.id,
+      drugId: line.drugId,
+      batchNumber: line.batchNumber,
+      expiryDate: line.expiryDate,
+      quantity: line.quantity,
+      unitCost: line.unitCost,
+      supplierReference: locked.transfer_number
+    });
+
+    await repository.insertTransferLine(client, {
+      transferId: locked.id,
+      transitBatchId: transitBatch.id,
+      ...line
+    });
+
+    await repository.insertMovement(client, {
+      healthcareCentreId: locked.from_healthcare_centre_id,
+      drugId: line.drugId,
+      batchId: line.sourceBatchId,
+      movementType: 'transfer_out',
+      quantity: -line.quantity,
+      reason: `Transfer ${locked.transfer_number} to ${locked.to_centre_name}`,
+      actorId: actor.id,
+      actorName: actor.fullName,
+      sourceReference: locked.transfer_number
+    });
+
+    await transitRepository.insertLocationMovement(client, {
+      drugId: line.drugId,
+      batchId: transitBatch.id,
+      movementType: 'transit_in',
+      quantity: line.quantity,
+      reason: `In transit to ${locked.to_centre_name} on ${locked.transfer_number}`,
+      actorId: actor.id,
+      actorName: actor.fullName,
+      sourceReference: locked.transfer_number
+    });
+  }
+
+  return { lines, totalQuantity };
 };
 
 const approveRequest = async ({ actor, scope, requestId, note, clientRequestId }) => {
@@ -331,88 +455,12 @@ const approveRequest = async ({ actor, scope, requestId, note, clientRequestId }
       throw new ConflictError('This request has no drugs on it', 'REQUEST_EMPTY');
     }
 
-    const lines = [];
-    for (const item of requestItems) {
-      const batches = await repository.lockAvailableBatches(client, location.id, item.drug_id);
-      const { allocations, remaining } = allocateBatches(batches, Number(item.quantity));
-
-      if (remaining > QUANTITY_EPSILON) {
-        throw new ConflictError(
-          `Not enough ${item.name} in your store (short by ${roundQuantity(remaining)})`,
-          'INSUFFICIENT_FACILITY_STOCK'
-        );
-      }
-
-      for (const allocation of allocations) {
-        const updated = await repository.decrementBatch(
-          client,
-          allocation.batch.id,
-          allocation.quantity
-        );
-        if (!updated) {
-          throw new ConflictError('Stock changed while approving, try again', 'TRANSFER_STOCK_CHANGED');
-        }
-        lines.push({
-          drugId: item.drug_id,
-          sourceBatchId: allocation.batch.id,
-          batchNumber: allocation.batch.batch_number,
-          expiryDate: allocation.batch.expiry_date,
-          quantity: allocation.quantity,
-          unitCost: allocation.batch.unit_cost
-        });
-      }
-    }
-
-    const totalQuantity = roundQuantity(
-      lines.reduce((total, line) => total + line.quantity, 0)
-    );
-
-    const transit = await transitRepository.findOrCreateTransitLocation(
-      client,
-      location.local_government_id
-    );
-
-    for (const line of lines) {
-      const transitBatch = await transitRepository.insertTransitBatch(client, {
-        localGovernmentId: location.local_government_id,
-        stockLocationId: transit.id,
-        drugId: line.drugId,
-        batchNumber: line.batchNumber,
-        expiryDate: line.expiryDate,
-        quantity: line.quantity,
-        unitCost: line.unitCost,
-        supplierReference: locked.transfer_number
-      });
-
-      await repository.insertTransferLine(client, {
-        transferId: requestId,
-        transitBatchId: transitBatch.id,
-        ...line
-      });
-
-      await repository.insertMovement(client, {
-        healthcareCentreId,
-        drugId: line.drugId,
-        batchId: line.sourceBatchId,
-        movementType: 'transfer_out',
-        quantity: -line.quantity,
-        reason: `Transfer ${locked.transfer_number} to ${locked.to_centre_name}`,
-        actorId: actor.id,
-        actorName: actor.fullName,
-        sourceReference: locked.transfer_number
-      });
-
-      await transitRepository.insertLocationMovement(client, {
-        drugId: line.drugId,
-        batchId: transitBatch.id,
-        movementType: 'transit_in',
-        quantity: line.quantity,
-        reason: `In transit to ${locked.to_centre_name} on ${locked.transfer_number}`,
-        actorId: actor.id,
-        actorName: actor.fullName,
-        sourceReference: locked.transfer_number
-      });
-    }
+    const { totalQuantity } = await releaseStockToTransit(client, {
+      actor,
+      locked,
+      location,
+      requestItems
+    });
 
     await repository.setRequestApproved(client, {
       transferId: requestId,
@@ -439,6 +487,333 @@ const approveRequest = async ({ actor, scope, requestId, note, clientRequestId }
   });
 
   return getRequestDetail({ scope, requestId });
+};
+
+const endorseRequest = async ({ actor, scope, requestId, note }) => {
+  const healthcareCentreId = requireFacilityScope(scope);
+  if (!isOic(scope)) {
+    throw new ForbiddenError(
+      'Only the OIC can approve a request raised by staff',
+      'OIC_ONLY'
+    );
+  }
+
+  await withTransaction(async (client) => {
+    const locked = await repository.lockRequest(client, requestId);
+    const isRequest = locked && locked.to_healthcare_centre_id === healthcareCentreId;
+    const isDispatch = locked && locked.from_healthcare_centre_id === healthcareCentreId;
+    if (!locked || (!isRequest && !isDispatch)) {
+      throw new NotFoundError('Transfer request was not found for this facility');
+    }
+    if (locked.status !== 'pending_approval') {
+      throw new ConflictError(
+        'This request is not waiting for OIC approval',
+        'REQUEST_NOT_PENDING'
+      );
+    }
+
+    if (isRequest) {
+      await repository.markEndorsed(client, {
+        transferId: requestId,
+        actorId: actor.id,
+        actorName: actor.fullName
+      });
+
+      await recordAudit(client, {
+        healthcareCentreId,
+        localGovernmentId: locked.local_government_id,
+        actor,
+        actorRoleCode: scope.roleCode,
+        actorScopeType: scope.scopeType,
+        action: 'facility_transfer.request_endorsed',
+        entityType: 'facility_transfer',
+        entityId: requestId,
+        summary: `Approved staff request ${locked.transfer_number} to ${locked.from_centre_name}`,
+        newValues: { note: note || null }
+      });
+      return;
+    }
+
+    const location = await repository.findFacilityLocation(healthcareCentreId);
+    if (!location) {
+      throw new NotFoundError('This healthcare centre has no active store location');
+    }
+
+    const requestItems = await repository.listRequestItems(client, requestId);
+    if (requestItems.length === 0) {
+      throw new ConflictError('This request has no drugs on it', 'REQUEST_EMPTY');
+    }
+
+    const { totalQuantity } = await releaseStockToTransit(client, {
+      actor,
+      locked,
+      location,
+      requestItems
+    });
+
+    await repository.markDispatchApproved(client, {
+      transferId: requestId,
+      itemCount: requestItems.length,
+      totalQuantity,
+      actorId: actor.id,
+      actorName: actor.fullName,
+      note
+    });
+
+    await recordAudit(client, {
+      healthcareCentreId,
+      localGovernmentId: locked.local_government_id,
+      actor,
+      actorRoleCode: scope.roleCode,
+      actorScopeType: scope.scopeType,
+      action: 'facility_transfer.dispatch_approved',
+      entityType: 'facility_transfer',
+      entityId: requestId,
+      summary: `Released ${locked.transfer_number} to ${locked.to_centre_name}`,
+      newValues: { itemCount: requestItems.length, totalQuantity, note: note || null }
+    });
+  });
+
+  return getRequestDetail({ scope, requestId });
+};
+
+const sendStock = async ({ actor, scope, payload }) => {
+  const healthcareCentreId = requireFacilityScope(scope);
+  const mine = await repository.findCentre(healthcareCentreId);
+  if (!mine) {
+    throw new NotFoundError('Your healthcare centre was not found');
+  }
+  if (payload.toCentreId === healthcareCentreId) {
+    throw new ValidationError('Choose a different facility', [
+      { field: 'toCentreId', message: 'You cannot send stock to your own facility' }
+    ]);
+  }
+
+  const destination = await repository.findCentre(payload.toCentreId);
+  if (!destination || destination.local_government_id !== mine.local_government_id) {
+    throw new NotFoundError('That facility is not in your local government');
+  }
+  const destinationLocation = await repository.findFacilityLocation(destination.id);
+  if (!destinationLocation) {
+    throw new NotFoundError(
+      `${destination.name} has no active store location`,
+      'FACILITY_LOCATION_MISSING'
+    );
+  }
+
+  const wanted = new Map();
+  payload.items.forEach((item, index) => {
+    const quantity = roundQuantity(Number(item.quantity));
+    if (!isPositive(quantity)) {
+      throw new ValidationError('Each line needs a quantity above zero', [
+        { field: `items.${index}.quantity`, message: 'Quantity must be greater than zero' }
+      ]);
+    }
+    wanted.set(item.drugId, roundQuantity((wanted.get(item.drugId) || 0) + quantity));
+  });
+
+  if (wanted.size === 0) {
+    throw new ValidationError('Add at least one drug to send', [
+      { field: 'items', message: 'Add at least one drug' }
+    ]);
+  }
+
+  const drugs = await repository.findDrugs(mine.local_government_id, [...wanted.keys()]);
+  const drugsById = new Map(drugs.map((drug) => [drug.id, drug]));
+  for (const drugId of wanted.keys()) {
+    const drug = drugsById.get(drugId);
+    if (!drug || !drug.is_active) {
+      throw new ValidationError('One or more drugs are not in the catalogue', [
+        { field: 'items', message: 'Drug is not available in this local government' }
+      ]);
+    }
+  }
+  payload.items.forEach((item, index) => {
+    const drug = drugsById.get(item.drugId);
+    if (drug && isCountableUnit(drug.unit_of_measure) && !isWholeQuantity(item.quantity)) {
+      throw new ValidationError(
+        `${drug.name} is counted in ${drug.unit_of_measure || 'units'}, so the quantity must be a whole number`,
+        [{ field: `items.${index}.quantity`, message: 'Enter a whole number' }]
+      );
+    }
+  });
+
+  const totalQuantity = roundQuantity(
+    [...wanted.values()].reduce((total, quantity) => total + quantity, 0)
+  );
+
+  const location = await repository.findFacilityLocation(healthcareCentreId);
+  if (!location) {
+    throw new NotFoundError('This healthcare centre has no active store location');
+  }
+  const ownStock = await repository.listFacilityStock(location.id);
+  const ownByDrug = new Map(
+    ownStock.map((row) => [row.drug_id, roundQuantity(Number(row.quantity))])
+  );
+  for (const [drugId, quantity] of wanted.entries()) {
+    const drug = drugsById.get(drugId);
+    const onHand = ownByDrug.get(drugId) || 0;
+    if (quantity > onHand + QUANTITY_EPSILON) {
+      throw new ValidationError(
+        `Your store only has ${roundQuantity(onHand)} ${
+          drug.unit_of_measure || 'units'
+        } of ${drug.name} available, so the quantity cannot go above that`,
+        [{ field: 'items', message: `Send ${roundQuantity(onHand)} or less` }]
+      );
+    }
+  }
+
+  const needsEndorsement = !isOic(scope);
+
+  const created = await withTransaction(async (client) => {
+    if (needsEndorsement) {
+      const row = await repository.insertRequest(client, {
+        localGovernmentId: mine.local_government_id,
+        transferNumber: buildNumber('TRQ'),
+        status: 'pending_approval',
+        fromCentreId: mine.id,
+        fromCentreName: mine.name,
+        toCentreId: destination.id,
+        toCentreName: destination.name,
+        notes: payload.note || null,
+        itemCount: wanted.size,
+        totalQuantity,
+        actorId: actor.id,
+        actorName: actor.fullName,
+        requestNote: payload.note || null
+      });
+
+      for (const [drugId, quantity] of wanted.entries()) {
+        await repository.insertRequestItem(client, { transferId: row.id, drugId, quantity });
+      }
+
+      await recordAudit(client, {
+        healthcareCentreId,
+        localGovernmentId: mine.local_government_id,
+        actor,
+        actorRoleCode: scope.roleCode,
+        actorScopeType: scope.scopeType,
+        action: 'facility_transfer.dispatch_requested',
+        entityType: 'facility_transfer',
+        entityId: row.id,
+        summary: `Asked the OIC to approve sending stock to ${destination.name}`,
+        newValues: { itemCount: wanted.size, totalQuantity }
+      });
+
+      return row;
+    }
+
+    const lines = [];
+    for (const [drugId, quantity] of wanted.entries()) {
+      const drug = drugsById.get(drugId);
+      const batches = await repository.lockAvailableBatches(client, location.id, drugId);
+      const { allocations, remaining } = allocateBatches(batches, quantity);
+      if (remaining > QUANTITY_EPSILON) {
+        throw new ConflictError(
+          `Not enough ${drug.name} in your store (short by ${roundQuantity(remaining)})`,
+          'INSUFFICIENT_FACILITY_STOCK'
+        );
+      }
+      for (const allocation of allocations) {
+        const updated = await repository.decrementBatch(
+          client,
+          allocation.batch.id,
+          allocation.quantity
+        );
+        if (!updated) {
+          throw new ConflictError('Stock changed while sending, try again', 'TRANSFER_STOCK_CHANGED');
+        }
+        lines.push({
+          drugId,
+          sourceBatchId: allocation.batch.id,
+          batchNumber: allocation.batch.batch_number,
+          expiryDate: allocation.batch.expiry_date,
+          quantity: allocation.quantity,
+          unitCost: allocation.batch.unit_cost
+        });
+      }
+    }
+
+    const row = await repository.insertRequest(client, {
+      localGovernmentId: mine.local_government_id,
+      transferNumber: buildNumber('TRQ'),
+      status: 'in_transit',
+      fromCentreId: mine.id,
+      fromCentreName: mine.name,
+      toCentreId: destination.id,
+      toCentreName: destination.name,
+      notes: payload.note || null,
+      itemCount: wanted.size,
+      totalQuantity,
+      actorId: actor.id,
+      actorName: actor.fullName,
+      requestNote: payload.note || null
+    });
+
+    const transit = await transitRepository.findOrCreateTransitLocation(
+      client,
+      location.local_government_id
+    );
+
+    for (const line of lines) {
+      const transitBatch = await transitRepository.insertTransitBatch(client, {
+        localGovernmentId: location.local_government_id,
+        stockLocationId: transit.id,
+        drugId: line.drugId,
+        batchNumber: line.batchNumber,
+        expiryDate: line.expiryDate,
+        quantity: line.quantity,
+        unitCost: line.unitCost,
+        supplierReference: row.transfer_number
+      });
+
+      await repository.insertTransferLine(client, {
+        transferId: row.id,
+        transitBatchId: transitBatch.id,
+        ...line
+      });
+
+      await repository.insertMovement(client, {
+        healthcareCentreId,
+        drugId: line.drugId,
+        batchId: line.sourceBatchId,
+        movementType: 'transfer_out',
+        quantity: -line.quantity,
+        reason: `Transfer ${row.transfer_number} to ${destination.name}`,
+        actorId: actor.id,
+        actorName: actor.fullName,
+        sourceReference: row.transfer_number
+      });
+
+      await transitRepository.insertLocationMovement(client, {
+        drugId: line.drugId,
+        batchId: transitBatch.id,
+        movementType: 'transit_in',
+        quantity: line.quantity,
+        reason: `In transit to ${destination.name} on ${row.transfer_number}`,
+        actorId: actor.id,
+        actorName: actor.fullName,
+        sourceReference: row.transfer_number
+      });
+    }
+
+    await recordAudit(client, {
+      healthcareCentreId,
+      localGovernmentId: location.local_government_id,
+      actor,
+      actorRoleCode: scope.roleCode,
+      actorScopeType: scope.scopeType,
+      action: 'facility_transfer.dispatched',
+      entityType: 'facility_transfer',
+      entityId: row.id,
+      summary: `Sent stock to ${destination.name}`,
+      newValues: { itemCount: wanted.size, totalQuantity }
+    });
+
+    return row;
+  });
+
+  return getRequestDetail({ scope, requestId: created.id });
 };
 
 const declineRequest = async ({ actor, scope, requestId, reason, clientRequestId }) => {
@@ -969,11 +1344,19 @@ const cancelRequest = async ({ actor, scope, requestId, reason }) => {
 
   await withTransaction(async (client) => {
     const locked = await repository.lockRequest(client, requestId);
-    if (!locked || locked.to_healthcare_centre_id !== healthcareCentreId) {
+    const isRequest = locked && locked.to_healthcare_centre_id === healthcareCentreId;
+    const isDispatch = locked && locked.from_healthcare_centre_id === healthcareCentreId;
+    if (!locked || (!isRequest && !isDispatch)) {
       throw new NotFoundError('Transfer request was not found for this facility');
     }
-    if (locked.status !== 'requested') {
+    if (locked.status !== 'requested' && locked.status !== 'pending_approval') {
       throw new ConflictError('Only a request still waiting can be cancelled', 'REQUEST_NOT_CANCELLABLE');
+    }
+    if (locked.requested_by !== actor.id && !isOic(scope)) {
+      throw new ForbiddenError(
+        'Only the person who raised this request, or the OIC, can cancel it',
+        'CANCEL_NOT_ALLOWED'
+      );
     }
 
     await repository.cancelRequest(client, {
@@ -1007,6 +1390,8 @@ module.exports = {
   listRequests,
   getRequestDetail,
   approveRequest,
+  endorseRequest,
+  sendStock,
   declineRequest,
   receiveRequest,
   resolveShortage,

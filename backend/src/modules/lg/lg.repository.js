@@ -345,6 +345,45 @@ const markReviewed = async (client, { localGovernmentId, requisitionId, status, 
   return rows[0];
 };
 
+const listActiveDrugsInLocalGovernment = async (client, localGovernmentId, drugIds) => {
+  const { rows } = await client.query(
+    `SELECT id, name FROM drugs
+      WHERE local_government_id = $1
+        AND is_active = TRUE
+        AND id = ANY($2::uuid[])`,
+    [localGovernmentId, drugIds]
+  );
+  return rows;
+};
+
+const replaceApprovedItems = async (client, { requisitionId, items }) => {
+  await client.query(
+    `DELETE FROM requisition_items
+      WHERE requisition_id = $1
+        AND NOT (drug_id = ANY($2::uuid[]))`,
+    [requisitionId, items.map((item) => item.drugId)]
+  );
+
+  for (const item of items) {
+    const { rows } = await client.query(
+      `UPDATE requisition_items
+          SET approved_quantity = $3
+        WHERE requisition_id = $1
+          AND drug_id = $2
+      RETURNING id`,
+      [requisitionId, item.drugId, item.approvedQuantity]
+    );
+    if (rows.length === 0) {
+      await client.query(
+        `INSERT INTO requisition_items
+           (requisition_id, drug_id, requested_quantity, approved_quantity, is_auto_generated)
+         VALUES ($1, $2, $3, $3, FALSE)`,
+        [requisitionId, item.drugId, item.approvedQuantity]
+      );
+    }
+  }
+};
+
 const updateApprovedQuantities = async (client, { requisitionId, items }) => {
   for (const item of items) {
     await client.query(
@@ -1955,6 +1994,8 @@ module.exports = {
   insertRequisitionEvent,
   markReviewed,
   updateApprovedQuantities,
+  listActiveDrugsInLocalGovernment,
+  replaceApprovedItems,
   lockAvailableBatches,
   decrementBatch,
   findDispatchByKey,

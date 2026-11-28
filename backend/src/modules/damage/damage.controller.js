@@ -21,6 +21,16 @@ const recordDisposition = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: result });
 });
 
+const markDamaged = asyncHandler(async (req, res) => {
+  const result = await service.markDamaged({
+    actor: req.user,
+    scope: req.scope,
+    batchId: req.params.batchId,
+    payload: req.body
+  });
+  res.status(201).json({ success: true, data: result });
+});
+
 const confirmReturn = asyncHandler(async (req, res) => {
   const result = await service.confirmReturn({
     actor: req.user,
@@ -34,6 +44,7 @@ const confirmReturn = asyncHandler(async (req, res) => {
 module.exports = {
   listDamagedStock,
   listReturnsInTransit,
+  markDamaged,
   recordDisposition,
   confirmReturn
 };

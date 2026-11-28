@@ -50,6 +50,7 @@ const listFacilityStock = async (stockLocationId) => {
       WHERE b.stock_location_id = $1
         AND b.status = 'usable'
         AND b.quantity > 0
+        AND (b.expiry_date IS NULL OR b.expiry_date >= CURRENT_DATE)
         AND d.is_active = TRUE
       GROUP BY d.id, d.code, d.name, d.unit_of_measure
       ORDER BY d.name`,
@@ -153,16 +154,21 @@ const insertMovement = async (client, movement) => {
 };
 
 const insertRequest = async (client, request) => {
+  const recordsRequest = request.status !== 'in_transit';
   const { rows } = await client.query(
     `INSERT INTO facility_transfers
        (local_government_id, transfer_number, status, from_healthcare_centre_id, from_centre_name,
         to_healthcare_centre_id, to_centre_name, notes, item_count, total_quantity,
         created_by, created_by_name, request_note, requested_by, requested_by_name, requested_at)
-     VALUES ($1, $2, 'requested', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $10, $11, now())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+             CASE WHEN $14 THEN $11::uuid ELSE NULL END,
+             CASE WHEN $14 THEN $12::text ELSE NULL END,
+             CASE WHEN $14 THEN now() ELSE NULL END)
      RETURNING *`,
     [
       request.localGovernmentId,
       request.transferNumber,
+      request.status || 'requested',
       request.fromCentreId,
       request.fromCentreName,
       request.toCentreId,
@@ -172,7 +178,8 @@ const insertRequest = async (client, request) => {
       request.totalQuantity,
       request.actorId,
       request.actorName,
-      request.requestNote || null
+      request.requestNote || null,
+      recordsRequest
     ]
   );
   return rows[0];
@@ -412,12 +419,13 @@ const lockRequest = async (client, transferId) => {
 const listOutgoingRequests = async (healthcareCentreId) => {
   const { rows } = await query(
     `SELECT ft.*,
+            CASE WHEN ft.to_healthcare_centre_id = $1 THEN 'in' ELSE 'out' END AS my_direction,
             (SELECT count(*)::int FROM facility_transfer_items ti
               WHERE ti.transfer_id = ft.id
                 AND ti.discrepancy_status = 'open') AS open_discrepancies
        FROM facility_transfers ft
       WHERE ft.to_healthcare_centre_id = $1
-        AND ft.requested_at IS NOT NULL
+         OR ft.from_healthcare_centre_id = $1
       ORDER BY ft.created_at DESC
       LIMIT 50`,
     [healthcareCentreId]
@@ -439,6 +447,66 @@ const listIncomingRequests = async (healthcareCentreId) => {
     [healthcareCentreId]
   );
   return rows;
+};
+
+const listEndorsementRequests = async (healthcareCentreId) => {
+  const { rows } = await query(
+    `SELECT ft.*,
+            CASE WHEN ft.to_healthcare_centre_id = $1 THEN 'in' ELSE 'out' END AS my_direction,
+            (SELECT count(*)::int FROM facility_transfer_items ti
+              WHERE ti.transfer_id = ft.id
+                AND ti.discrepancy_status = 'open') AS open_discrepancies
+       FROM facility_transfers ft
+      WHERE (ft.to_healthcare_centre_id = $1 OR ft.from_healthcare_centre_id = $1)
+        AND ft.status = 'pending_approval'
+      ORDER BY ft.created_at ASC
+      LIMIT 50`,
+    [healthcareCentreId]
+  );
+  return rows;
+};
+
+const markDispatchApproved = async (client, request) => {
+  const { rows } = await client.query(
+    `UPDATE facility_transfers
+        SET status = 'in_transit',
+            item_count = $2,
+            total_quantity = $3,
+            endorsed_by = $4,
+            endorsed_by_name = $5,
+            endorsed_at = now(),
+            decided_by = $4,
+            decided_by_name = $5,
+            decided_at = now(),
+            decision_note = $6,
+            updated_at = now()
+      WHERE id = $1
+      RETURNING *`,
+    [
+      request.transferId,
+      request.itemCount,
+      request.totalQuantity,
+      request.actorId,
+      request.actorName,
+      request.note || null
+    ]
+  );
+  return rows[0];
+};
+
+const markEndorsed = async (client, request) => {
+  const { rows } = await client.query(
+    `UPDATE facility_transfers
+        SET status = 'requested',
+            endorsed_by = $2,
+            endorsed_by_name = $3,
+            endorsed_at = now(),
+            updated_at = now()
+      WHERE id = $1
+      RETURNING *`,
+    [request.transferId, request.actorId, request.actorName]
+  );
+  return rows[0];
 };
 
 const findDecisionReplay = async ({ transferId, healthcareCentreId, idempotencyKey }) => {
@@ -589,8 +657,11 @@ module.exports = {
   lockRequest,
   listOutgoingRequests,
   listIncomingRequests,
+  listEndorsementRequests,
   setRequestApproved,
   setRequestDeclined,
+  markEndorsed,
+  markDispatchApproved,
   setRequestPartiallyReceived,
   setRequestReceived,
   cancelRequest

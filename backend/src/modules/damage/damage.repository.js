@@ -12,6 +12,49 @@ const findFacilityLocation = async (executor, healthcareCentreId) => {
   return rows[0] || null;
 };
 
+const listUsableBatches = async (executor, healthcareCentreId) => {
+  const { rows } = await executor.query(
+    `SELECT b.id, b.batch_number, b.expiry_date, b.quantity::float AS quantity,
+            b.drug_id, b.unit_cost, b.supplier_reference,
+            d.code AS drug_code, d.name AS drug_name, d.unit_of_measure
+       FROM batches b
+       JOIN drugs d ON d.id = b.drug_id
+       JOIN stock_locations sl ON sl.id = b.stock_location_id
+      WHERE sl.healthcare_centre_id = $1
+        AND b.status = 'usable'
+        AND b.quantity > 0
+      ORDER BY d.name, b.expiry_date NULLS LAST, b.batch_number`,
+    [healthcareCentreId]
+  );
+  return rows;
+};
+
+const insertQuarantinedBatch = async (client, batch) => {
+  const { rows } = await client.query(
+    `INSERT INTO batches
+       (healthcare_centre_id, local_government_id, stock_location_id, drug_id, batch_number,
+        expiry_date, quantity, unit_cost, supplier_reference, received_date, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_DATE, 'quarantined')
+     ON CONFLICT (stock_location_id, drug_id, batch_number)
+     DO UPDATE SET quantity = batches.quantity + EXCLUDED.quantity,
+                   status = 'quarantined',
+                   updated_at = now()
+     RETURNING id, quantity::float AS quantity`,
+    [
+      batch.healthcareCentreId,
+      batch.localGovernmentId,
+      batch.stockLocationId,
+      batch.drugId,
+      batch.batchNumber,
+      batch.expiryDate || null,
+      batch.quantity,
+      batch.unitCost === undefined ? null : batch.unitCost,
+      batch.supplierReference || null
+    ]
+  );
+  return rows[0];
+};
+
 const listQuarantinedBatches = async (executor, healthcareCentreId) => {
   const { rows } = await executor.query(
     `SELECT b.id, b.batch_number, b.expiry_date, b.quantity::float AS quantity,
@@ -360,6 +403,8 @@ const receiveReturn = async (client, { returnBatchId, outcome, receivedByName })
 
 module.exports = {
   findFacilityLocation,
+  listUsableBatches,
+  insertQuarantinedBatch,
   listQuarantinedBatches,
   lockBatch,
   findLotBatch,

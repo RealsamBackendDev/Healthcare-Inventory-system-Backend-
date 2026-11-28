@@ -11,14 +11,14 @@ const router = express.Router();
 router.get(
   '/transfers/neighbours',
   authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_CREATE),
+  authorize(PERMISSIONS.TRANSFERS_VIEW),
   controller.listNeighbours
 );
 
 router.get(
   '/transfers/neighbours/:facilityId/stock',
   authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_CREATE),
+  authorize(PERMISSIONS.TRANSFERS_VIEW),
   validate({ params: schemas.facilityIdParamSchema }),
   controller.neighbourStock
 );
@@ -26,7 +26,7 @@ router.get(
 router.get(
   '/transfers/requests',
   authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_CREATE),
+  authorize(PERMISSIONS.TRANSFERS_VIEW),
   validate({ query: schemas.listRequestsQuerySchema }),
   controller.listRequests
 );
@@ -34,15 +34,23 @@ router.get(
 router.post(
   '/transfers/requests',
   authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_CREATE),
+  authorize(PERMISSIONS.TRANSFERS_REQUEST),
   validate({ body: schemas.createRequestSchema }),
   controller.createRequest
+);
+
+router.post(
+  '/transfers/send',
+  authenticate,
+  authorize(PERMISSIONS.TRANSFERS_REQUEST),
+  validate({ body: schemas.sendStockSchema }),
+  controller.sendStock
 );
 
 router.get(
   '/transfers/requests/:requestId',
   authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_CREATE),
+  authorize(PERMISSIONS.TRANSFERS_VIEW),
   validate({ params: schemas.requestIdParamSchema }),
   controller.getRequest
 );
@@ -50,15 +58,23 @@ router.get(
 router.post(
   '/transfers/requests/:requestId/approve',
   authenticate,
-  authorize(PERMISSIONS.STOCK_DISPENSE),
+  authorize(PERMISSIONS.TRANSFERS_APPROVE),
   validate({ params: schemas.requestIdParamSchema, body: schemas.decisionSchema }),
   controller.approveRequest
 );
 
 router.post(
+  '/transfers/requests/:requestId/endorse',
+  authenticate,
+  authorize(PERMISSIONS.TRANSFERS_APPROVE),
+  validate({ params: schemas.requestIdParamSchema, body: schemas.endorseSchema }),
+  controller.endorseRequest
+);
+
+router.post(
   '/transfers/requests/:requestId/decline',
   authenticate,
-  authorize(PERMISSIONS.STOCK_DISPENSE),
+  authorize(PERMISSIONS.TRANSFERS_APPROVE),
   validate({ params: schemas.requestIdParamSchema, body: schemas.declineSchema }),
   controller.declineRequest
 );
@@ -66,7 +82,7 @@ router.post(
 router.post(
   '/transfers/requests/:requestId/receive',
   authenticate,
-  authorize(PERMISSIONS.STOCK_RECEIVE),
+  authorize(PERMISSIONS.TRANSFERS_RECEIVE),
   validate({ params: schemas.requestIdParamSchema, body: schemas.receiveSchema }),
   controller.receiveRequest
 );
@@ -74,7 +90,7 @@ router.post(
 router.post(
   '/transfers/requests/:requestId/shortages/:lineId/resolve',
   authenticate,
-  authorize(PERMISSIONS.STOCK_RECEIVE),
+  authorize(PERMISSIONS.TRANSFERS_RECEIVE),
   validate({
     params: schemas.shortageParamSchema,
     body: schemas.resolveShortageSchema
@@ -85,7 +101,7 @@ router.post(
 router.post(
   '/transfers/requests/:requestId/cancel',
   authenticate,
-  authorize(PERMISSIONS.REQUISITIONS_CREATE),
+  authorize(PERMISSIONS.TRANSFERS_CANCEL),
   validate({ params: schemas.requestIdParamSchema, body: schemas.cancelSchema }),
   controller.cancelRequest
 );

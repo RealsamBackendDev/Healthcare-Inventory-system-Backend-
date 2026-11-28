@@ -22,6 +22,11 @@ const dispositionSchema = z.object({
   note: z.string().trim().min(3, 'Explain the decision in a few words').max(500)
 });
 
+const quarantineSchema = z.object({
+  quantity: z.coerce.number().positive('Enter how many units are damaged').max(1000000000),
+  reason: z.string().trim().min(3, 'Say briefly what happened to the stock').max(300)
+});
+
 const returnConfirmationSchema = z.object({
   outcome: z.enum(['restock', 'write_off'], {
     errorMap: () => ({ message: 'Choose whether the returned stock is usable or written off' })
@@ -32,5 +37,6 @@ const returnConfirmationSchema = z.object({
 module.exports = {
   batchIdParamSchema,
   dispositionSchema,
+  quarantineSchema,
   returnConfirmationSchema
 };

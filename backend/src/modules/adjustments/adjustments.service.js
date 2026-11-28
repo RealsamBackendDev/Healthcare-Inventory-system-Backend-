@@ -109,7 +109,10 @@ const createAdjustment = async ({ actor, roleCode, healthcareCentreId, payload }
 
     const resultingQuantity = roundQuantity(Number(batch.quantity) + quantity);
     if (isNegative(resultingQuantity)) {
-      throw new ConflictError('This adjustment would make the batch quantity negative', 'NEGATIVE_STOCK');
+      throw new ConflictError(
+        `Cannot reduce ${batch.drug_name} (${batch.batch_number}) by ${absoluteQuantity} ${batch.unit_of_measure}. Only ${batch.quantity} ${batch.unit_of_measure} is on hand, and stock cannot go below zero.`,
+        'NEGATIVE_STOCK'
+      );
     }
 
     const thresholds = await getThresholds(client, healthcareCentreId);
@@ -354,7 +357,7 @@ const prepareBulkLine = async (client, healthcareCentreId, line) => {
   const resultingQuantity = roundQuantity(Number(batch.quantity) + quantity);
   if (isNegative(resultingQuantity)) {
     throw new ConflictError(
-      `Reducing ${batch.drug_name} (${batch.batch_number}) by ${Math.abs(quantity)} would leave a negative quantity`,
+      `Cannot reduce ${batch.drug_name} (${batch.batch_number}) by ${Math.abs(quantity)} ${batch.unit_of_measure}. Only ${batch.quantity} ${batch.unit_of_measure} is on hand, and stock cannot go below zero.`,
       'NEGATIVE_STOCK'
     );
   }

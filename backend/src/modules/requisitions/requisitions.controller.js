@@ -58,8 +58,8 @@ const approveRequisition = asyncHandler(async (req, res) => {
     actor: req.user,
     healthcareCentreId: req.scope.healthcareCentreId,
     requisitionId: req.params.requisitionId,
-    comment: req.body.comment,
-    items: req.body.items
+    items: req.body.items,
+    comment: req.body.comment
   });
   res.json({ success: true, data: result });
 });
@@ -161,7 +161,33 @@ const receiveDispatchDelivery = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
+const listIncomingTransfers = asyncHandler(async (req, res) => {
+  const result = await lgService.listIncomingFacilityTransfers(req.scope.healthcareCentreId);
+  res.json({ success: true, data: result });
+});
+
+const getTransferDetail = asyncHandler(async (req, res) => {
+  const result = await lgService.getIncomingFacilityTransfer({
+    scope: req.scope,
+    transferId: req.params.transferId
+  });
+  res.json({ success: true, data: result });
+});
+
+const receiveTransfer = asyncHandler(async (req, res) => {
+  const result = await lgService.receiveFacilityTransfer({
+    actor: req.user,
+    scope: req.scope,
+    transferId: req.params.transferId,
+    note: req.body.note
+  });
+  res.json({ success: true, data: result });
+});
+
 module.exports = {
+  listIncomingTransfers,
+  getTransferDetail,
+  receiveTransfer,
   createRequisition,
   listRequisitions,
   getRequisition,

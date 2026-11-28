@@ -31,6 +31,23 @@ const getMemberships = async (userId) => {
   return rows;
 };
 
+const getVendorAccount = async (userId) => {
+  const { rows } = await query(
+    `SELECT vu.vendor_id, vu.is_primary, v.vendor_code, v.legal_name, v.status, v.state_id,
+            r.id AS role_id, r.code AS role_code, r.name AS role_name,
+            s.name AS state_name
+       FROM vendor_users vu
+       JOIN vendors v ON v.id = vu.vendor_id
+       JOIN states s ON s.id = v.state_id
+       JOIN roles r ON r.code = 'VENDOR'
+      WHERE vu.user_id = $1
+        AND vu.is_active = TRUE
+        AND v.status <> 'excluded'`,
+    [userId]
+  );
+  return rows[0] || null;
+};
+
 const getPermissions = async (roleId) => {
   const { rows } = await query(
     `SELECT p.code
@@ -86,6 +103,7 @@ module.exports = {
   findByEmail,
   findById,
   getMemberships,
+  getVendorAccount,
   getPermissions,
   recordFailedLogin,
   recordSuccessfulLogin,

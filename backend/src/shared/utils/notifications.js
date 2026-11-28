@@ -64,7 +64,31 @@ const notifyLocalGovernmentMembers = async (
   return rowCount;
 };
 
+const notifyVendorUsers = async (
+  client,
+  { vendorId, excludeUserId, type, title, message, entityType, entityId }
+) => {
+  if (!vendorId) {
+    return 0;
+  }
+
+  const { rowCount } = await client.query(
+    `INSERT INTO notifications (vendor_id, user_id, type, title, message, entity_type, entity_id)
+     SELECT DISTINCT $1::uuid, vu.user_id, $2::text, $3::text, $4::text, $5::text, $6::text
+       FROM vendor_users vu
+       JOIN users u ON u.id = vu.user_id
+      WHERE vu.vendor_id = $1
+        AND vu.is_active = TRUE
+        AND u.is_active = TRUE
+        AND ($7::uuid IS NULL OR vu.user_id <> $7)`,
+    [vendorId, type, title, message, entityType, entityId, excludeUserId || null]
+  );
+
+  return rowCount;
+};
+
 module.exports = {
   notifyCentreMembers,
-  notifyLocalGovernmentMembers
+  notifyLocalGovernmentMembers,
+  notifyVendorUsers
 };

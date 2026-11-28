@@ -33,6 +33,7 @@ const mapBatch = (row) => ({
   daysToExpiry: row.days_to_expiry === null ? null : Number(row.days_to_expiry),
   quantity: roundQuantity(Number(row.quantity)),
   unitCost: row.unit_cost === null ? null : Number(row.unit_cost),
+  sellingPrice: row.selling_price === null ? null : Number(row.selling_price),
   receivedDate: row.received_date,
   supplierReference: row.supplier_reference,
   status: row.is_usable ? 'usable' : row.status === 'usable' ? 'expired' : row.status,

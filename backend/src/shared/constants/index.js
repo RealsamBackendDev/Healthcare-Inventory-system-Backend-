@@ -3,7 +3,8 @@ const ROLES = {
   LG_ADMIN: 'LG_ADMIN',
   LG_INVENTORY_OFFICER: 'LG_INVENTORY_OFFICER',
   ADMINISTRATOR: 'ADMINISTRATOR',
-  STAFF: 'STAFF'
+  STAFF: 'STAFF',
+  VENDOR: 'VENDOR'
 };
 
 const PERMISSIONS = {
@@ -48,7 +49,17 @@ const PERMISSIONS = {
   TRANSFERS_REQUEST: 'transfers.request',
   TRANSFERS_APPROVE: 'transfers.approve',
   TRANSFERS_RECEIVE: 'transfers.receive',
-  TRANSFERS_CANCEL: 'transfers.cancel'
+  TRANSFERS_CANCEL: 'transfers.cancel',
+  VENDORS_VIEW: 'vendors.view',
+  VENDORS_MANAGE: 'vendors.manage',
+  VENDORS_SCREEN: 'vendors.screen',
+  VENDORS_REGISTER: 'vendors.register',
+  VENDOR_STOCK_VIEW: 'vendor_portal.stock_view',
+  VENDOR_STOCK_MANAGE: 'vendor_portal.stock_manage',
+  VENDOR_REQUESTS_VIEW: 'vendor_requests.view',
+  VENDOR_REQUESTS_MANAGE: 'vendor_requests.manage',
+  VENDOR_PORTAL_REQUESTS_VIEW: 'vendor_portal.requests_view',
+  VENDOR_PORTAL_REQUESTS_RESPOND: 'vendor_portal.requests_respond'
 };
 
 const PERMISSION_DEFINITIONS = [
@@ -93,7 +104,17 @@ const PERMISSION_DEFINITIONS = [
   { code: PERMISSIONS.TRANSFERS_REQUEST, name: 'Request transfers', description: 'Create transfer requests to neighbouring facilities' },
   { code: PERMISSIONS.TRANSFERS_APPROVE, name: 'Approve transfers', description: 'Approve or decline transfer requests as the source facility' },
   { code: PERMISSIONS.TRANSFERS_RECEIVE, name: 'Receive transfers', description: 'Receive transfer shipments and resolve shortages' },
-  { code: PERMISSIONS.TRANSFERS_CANCEL, name: 'Cancel transfers', description: 'Cancel transfer requests before they are received' }
+  { code: PERMISSIONS.TRANSFERS_CANCEL, name: 'Cancel transfers', description: 'Cancel transfer requests before they are received' },
+  { code: PERMISSIONS.VENDORS_VIEW, name: 'View vendors', description: 'View registered vendors and the stock they hold' },
+  { code: PERMISSIONS.VENDORS_MANAGE, name: 'Manage vendors', description: 'Create vendor profiles and vendor logins, edit details and change standing' },
+  { code: PERMISSIONS.VENDORS_SCREEN, name: 'Screen vendors', description: 'Screen a vendor submission and confirm or return it' },
+  { code: PERMISSIONS.VENDORS_REGISTER, name: 'Register vendors', description: 'Register a screened vendor so local governments can buy from it' },
+  { code: PERMISSIONS.VENDOR_STOCK_VIEW, name: 'View own stock', description: 'View the stock published by the vendor account' },
+  { code: PERMISSIONS.VENDOR_STOCK_MANAGE, name: 'Maintain own stock', description: 'Add, edit and retire stock lines for the vendor account' },
+  { code: PERMISSIONS.VENDOR_REQUESTS_VIEW, name: 'View vendor requests', description: 'View requests sent to vendors and what the vendor answered' },
+  { code: PERMISSIONS.VENDOR_REQUESTS_MANAGE, name: 'Send vendor requests', description: 'Build a request from collated demand, send it to a vendor and cancel it' },
+  { code: PERMISSIONS.VENDOR_PORTAL_REQUESTS_VIEW, name: 'View supply requests', description: 'View requests local governments have sent to the vendor account' },
+  { code: PERMISSIONS.VENDOR_PORTAL_REQUESTS_RESPOND, name: 'Answer supply requests', description: 'Accept, adjust, confirm or decline supply requests' }
 ];
 
 const LG_ROLE_PERMISSIONS = [
@@ -122,7 +143,10 @@ const LG_ROLE_PERMISSIONS = [
   PERMISSIONS.DISPATCHES_POST,
   PERMISSIONS.DELIVERIES_RECEIVE,
   PERMISSIONS.DISCREPANCIES_CLOSE,
-  PERMISSIONS.THRESHOLDS_APPROVE
+  PERMISSIONS.THRESHOLDS_APPROVE,
+  PERMISSIONS.VENDORS_VIEW,
+  PERMISSIONS.VENDOR_REQUESTS_VIEW,
+  PERMISSIONS.VENDOR_REQUESTS_MANAGE
 ];
 
 const LG_OFFICER_PERMISSIONS = LG_ROLE_PERMISSIONS.filter(
@@ -205,6 +229,17 @@ const ROLE_DEFINITIONS = [
     name: 'Logistician',
     description: 'Runs warehouse, distribution and requisition operations in the local government, with access to LG facilities',
     permissions: LG_OFFICER_PERMISSIONS
+  },
+  {
+    code: ROLES.VENDOR,
+    name: 'Vendor',
+    description: 'Supplier portal account: publishes the stock a registered vendor holds and answers local government requests',
+    permissions: [
+      PERMISSIONS.VENDOR_STOCK_VIEW,
+      PERMISSIONS.VENDOR_STOCK_MANAGE,
+      PERMISSIONS.VENDOR_PORTAL_REQUESTS_VIEW,
+      PERMISSIONS.VENDOR_PORTAL_REQUESTS_RESPOND
+    ]
   }
 ];
 

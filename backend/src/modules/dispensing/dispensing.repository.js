@@ -14,7 +14,8 @@ const findDrugs = async (client, healthcareCentreId, drugIds) => {
 
 const lockEligibleBatches = async (client, { healthcareCentreId, drugId }) => {
   const { rows } = await client.query(
-    `SELECT b.id, b.batch_number, b.expiry_date, b.received_date, b.quantity, b.unit_cost, b.status
+    `SELECT b.id, b.batch_number, b.expiry_date, b.received_date, b.quantity, b.unit_cost,
+            b.selling_price, b.status
        FROM batches b
       WHERE b.healthcare_centre_id = $1
         AND b.drug_id = $2
@@ -47,9 +48,9 @@ const insertDispensingRecord = async (client, record) => {
 
 const insertDispensingItem = async (client, item) => {
   await client.query(
-    `INSERT INTO dispensing_items (dispensing_record_id, drug_id, batch_id, quantity)
-     VALUES ($1, $2, $3, $4)`,
-    [item.dispensingRecordId, item.drugId, item.batchId, item.quantity]
+    `INSERT INTO dispensing_items (dispensing_record_id, drug_id, batch_id, quantity, unit_price)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [item.dispensingRecordId, item.drugId, item.batchId, item.quantity, item.unitPrice]
   );
 };
 
@@ -78,10 +79,12 @@ const listRecords = async ({ healthcareCentreId, search, from, to, limit, offset
   const { rows } = await query(
     `SELECT r.id, r.reference, r.note, r.created_by, r.created_by_name, r.created_at,
             COALESCE(items.item_count, 0) AS item_count,
-            COALESCE(items.total_quantity, 0) AS total_quantity
+            COALESCE(items.total_quantity, 0) AS total_quantity,
+            COALESCE(items.total_value, 0) AS total_value
        FROM dispensing_records r
        LEFT JOIN (
-         SELECT dispensing_record_id, count(*)::int AS item_count, SUM(quantity) AS total_quantity
+         SELECT dispensing_record_id, count(*)::int AS item_count, SUM(quantity) AS total_quantity,
+                SUM(quantity * COALESCE(unit_price, 0)) AS total_value
            FROM dispensing_items
           GROUP BY dispensing_record_id
        ) items ON items.dispensing_record_id = r.id
@@ -117,7 +120,7 @@ const findRecord = async (healthcareCentreId, recordId) => {
 
 const listRecordItems = async (recordId) => {
   const { rows } = await query(
-    `SELECT di.id, di.quantity, di.batch_id, di.drug_id,
+    `SELECT di.id, di.quantity, di.unit_price, di.batch_id, di.drug_id,
             d.code AS drug_code, d.name AS drug_name, d.unit_of_measure,
             b.batch_number, b.expiry_date
        FROM dispensing_items di

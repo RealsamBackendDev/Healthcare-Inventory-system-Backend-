@@ -13,10 +13,10 @@
     "migrate": "node src/database/migrate.js",
     "seed": "node src/database/seeds/001_bootstrap.js",
     "seed:demo": "node src/database/seeds/002_demo.js",
+    "seed:supervisor": "node src/database/seeds/005_state_supervisor.js",
     "test": "jest --runInBand",
     "test:unit": "jest tests/unit --runInBand",
-    "test:integration": "jest tests/integration --runInBand",
-    "seed:phase2": "node src/database/seeds/003_phase2_demo.js"
+    "test:integration": "jest tests/integration --runInBand"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

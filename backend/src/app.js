@@ -24,6 +24,9 @@ const lgRoutes = require('./modules/lg/lg.routes');
 const lgAdminRoutes = require('./modules/lg/lg.admin');
 const lgDrugsRoutes = require('./modules/lg/lg.drugs');
 const lgAlertsRoutes = require('./modules/lg/alerts/lg.alerts.routes');
+const vendorsRoutes = require('./modules/vendors/vendors.routes');
+const vendorRequestsRoutes = require('./modules/vendors/vendor-requests.routes');
+const vendorPortalRoutes = require('./modules/vendors/vendor-portal.routes');
 
 const app = express();
 const damageRoutes = require('./modules/damage/damage.routes');
@@ -109,6 +112,9 @@ app.use('/api/lg', lgAlertsRoutes);
 app.use('/api/lg', lgAdminRoutes);
 app.use('/api/lg', lgDrugsRoutes);
 app.use('/api/lg', lgRoutes);
+app.use('/api/lg', vendorsRoutes);
+app.use('/api/lg', vendorRequestsRoutes);
+app.use('/api/vendor', vendorPortalRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

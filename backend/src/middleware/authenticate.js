@@ -13,13 +13,15 @@ const LOCAL_GOVERNMENT_PATHS = [
 
 const LOCAL_GOVERNMENT_ONLY_PATHS = ['/api/lg'];
 
+const VENDOR_PATHS = ['/api/vendor', '/api/auth', '/api/notifications'];
+
 const loadMemberships = async (userId) => {
   const { rows } = await query(
     `SELECT m.id, m.healthcare_centre_id, m.local_government_id, m.role_id,
             r.code AS role_code, r.name AS role_name,
             hc.name AS centre_name, hc.code AS centre_code,
             lg.name AS local_government_name, lg.code AS local_government_code,
-            s.name AS state_name
+            s.id AS state_id, s.name AS state_name
        FROM user_memberships m
        JOIN roles r ON r.id = m.role_id
        JOIN local_governments lg ON lg.id = m.local_government_id
@@ -34,6 +36,21 @@ const loadMemberships = async (userId) => {
   return rows;
 };
 
+const loadVendorAccount = async (userId) => {
+  const { rows } = await query(
+    `SELECT vu.vendor_id, v.vendor_code, v.legal_name, v.status, v.state_id,
+            r.id AS role_id, r.code AS role_code, r.name AS role_name
+       FROM vendor_users vu
+       JOIN vendors v ON v.id = vu.vendor_id
+       JOIN roles r ON r.code = 'VENDOR'
+      WHERE vu.user_id = $1
+        AND vu.is_active = TRUE
+        AND v.status <> 'excluded'`,
+    [userId]
+  );
+  return rows[0] || null;
+};
+
 const loadPermissions = async (roleId) => {
   const { rows } = await query(
     `SELECT p.code
@@ -45,13 +62,10 @@ const loadPermissions = async (roleId) => {
   return rows.map((row) => row.code);
 };
 
-const isLocalGovernmentPath = (originalUrl) =>
-  LOCAL_GOVERNMENT_PATHS.some((prefix) => (originalUrl || '').startsWith(prefix));
+const matchesPath = (paths, originalUrl) =>
+  paths.some((prefix) => (originalUrl || '').startsWith(prefix));
 
 const authenticate = async (req, res, next) => {
-  const isLocalGovernmentOnlyPath = (originalUrl) =>
-    LOCAL_GOVERNMENT_ONLY_PATHS.some((prefix) => (originalUrl || '').startsWith(prefix));
-
   try {
     const header = req.headers.authorization || '';
     const [scheme, token] = header.split(' ');
@@ -80,9 +94,46 @@ const authenticate = async (req, res, next) => {
       throw new AuthenticationError('This session has been revoked', 'SESSION_REVOKED');
     }
 
+    req.user = {
+      id: user.id,
+      email: user.email,
+      fullName: user.full_name
+    };
+
     const memberships = await loadMemberships(user.id);
+
     if (memberships.length === 0) {
-      throw new AuthenticationError('No active membership was found for this account', 'NO_MEMBERSHIP');
+      const vendor = await loadVendorAccount(user.id);
+      if (!vendor) {
+        throw new AuthenticationError('No active membership was found for this account', 'NO_MEMBERSHIP');
+      }
+      if (!matchesPath(VENDOR_PATHS, req.originalUrl)) {
+        throw new ForbiddenError(
+          'This is a vendor account and can only open the vendor portal',
+          'VENDOR_ACCOUNT'
+        );
+      }
+
+      const permissions = await loadPermissions(vendor.role_id);
+      req.memberships = [];
+      req.scope = {
+        membershipId: null,
+        scopeType: 'vendor',
+        healthcareCentreId: null,
+        centreName: null,
+        localGovernmentId: null,
+        localGovernmentName: null,
+        stateId: vendor.state_id,
+        stateName: null,
+        vendorId: vendor.vendor_id,
+        vendorCode: vendor.vendor_code,
+        vendorName: vendor.legal_name,
+        vendorStatus: vendor.status,
+        roleCode: vendor.role_code,
+        roleName: vendor.role_name,
+        permissions: new Set(permissions)
+      };
+      return next();
     }
 
     const centreMemberships = memberships.filter((item) => item.healthcare_centre_id);
@@ -91,7 +142,7 @@ const authenticate = async (req, res, next) => {
 
     const localGovernmentMembership = memberships.find((item) => !item.healthcare_centre_id);
     const preferLocalGovernment =
-      Boolean(localGovernmentMembership) && isLocalGovernmentOnlyPath(req.originalUrl);
+      Boolean(localGovernmentMembership) && matchesPath(LOCAL_GOVERNMENT_ONLY_PATHS, req.originalUrl);
 
     if (preferLocalGovernment) {
       membership = localGovernmentMembership;
@@ -112,7 +163,7 @@ const authenticate = async (req, res, next) => {
       membership = centreMemberships[0] || memberships[0];
     }
 
-    if (!membership.healthcare_centre_id && !isLocalGovernmentPath(req.originalUrl)) {
+    if (!membership.healthcare_centre_id && !matchesPath(LOCAL_GOVERNMENT_PATHS, req.originalUrl)) {
       throw new ForbiddenError(
         'This account works at local government level and cannot open facility stock screens',
         'LOCAL_GOVERNMENT_ACCOUNT'
@@ -121,11 +172,6 @@ const authenticate = async (req, res, next) => {
 
     const permissions = await loadPermissions(membership.role_id);
 
-    req.user = {
-      id: user.id,
-      email: user.email,
-      fullName: user.full_name
-    };
     req.memberships = memberships;
     req.scope = {
       membershipId: membership.id,
@@ -134,7 +180,12 @@ const authenticate = async (req, res, next) => {
       centreName: membership.centre_name || null,
       localGovernmentId: membership.local_government_id,
       localGovernmentName: membership.local_government_name,
+      stateId: membership.state_id,
       stateName: membership.state_name,
+      vendorId: null,
+      vendorCode: null,
+      vendorName: null,
+      vendorStatus: null,
       roleCode: membership.role_code,
       roleName: membership.role_name,
       permissions: new Set(permissions)

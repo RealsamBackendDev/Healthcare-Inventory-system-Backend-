@@ -7,6 +7,8 @@ const { parseDateInput, todayIsoDate } = require('../../shared/utils/date');
 const { recordAudit } = require('../../shared/utils/audit');
 const repository = require('./dispensing.repository');
 
+const roundMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
+
 const generateReference = () => {
   const date = todayIsoDate().replace(/-/g, '');
   return `DSP-${date}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
@@ -63,6 +65,7 @@ const dispense = async ({ actor, healthcareCentreId, payload }) => {
     });
 
     const allocations = [];
+    let totalValue = 0;
 
     for (const item of items) {
       const drug = drugsById.get(item.drugId);
@@ -93,6 +96,8 @@ const dispense = async ({ actor, healthcareCentreId, payload }) => {
 
         const allocated = Math.min(remaining, batchQuantity);
         const newBatchQuantity = subtractQuantity(batchQuantity, allocated);
+        const unitPrice = batch.selling_price === null ? null : Number(batch.selling_price);
+        const sellingValue = unitPrice === null ? null : roundMoney(allocated * unitPrice);
 
         await repository.setBatchQuantity(client, { batchId: batch.id, quantity: newBatchQuantity });
 
@@ -100,7 +105,8 @@ const dispense = async ({ actor, healthcareCentreId, payload }) => {
           dispensingRecordId: record.id,
           drugId: drug.id,
           batchId: batch.id,
-          quantity: roundQuantity(allocated)
+          quantity: roundQuantity(allocated),
+          unitPrice
         });
 
         await repository.insertMovement(client, {
@@ -121,8 +127,14 @@ const dispense = async ({ actor, healthcareCentreId, payload }) => {
           batchId: batch.id,
           batchNumber: batch.batch_number,
           expiryDate: batch.expiry_date,
-          quantity: roundQuantity(allocated)
+          quantity: roundQuantity(allocated),
+          unitPrice,
+          sellingValue
         });
+
+        if (sellingValue !== null) {
+          totalValue = roundMoney(totalValue + sellingValue);
+        }
 
         remaining = subtractQuantity(remaining, allocated);
       }
@@ -160,7 +172,13 @@ const dispense = async ({ actor, healthcareCentreId, payload }) => {
         createdAt: record.created_at,
         createdByName: record.created_by_name
       },
-      allocations
+      allocations,
+      totals: {
+        quantity: roundQuantity(
+          allocations.reduce((total, allocation) => total + allocation.quantity, 0)
+        ),
+        value: totalValue
+      }
     };
   });
 };
@@ -182,6 +200,7 @@ const listDispensing = async (healthcareCentreId, filters) => {
       note: row.note,
       itemCount: Number(row.item_count),
       totalQuantity: Number(row.total_quantity),
+      totalValue: roundMoney(row.total_value),
       createdByName: row.created_by_name,
       createdAt: row.created_at
     })),
@@ -212,8 +231,26 @@ const getDispensing = async (healthcareCentreId, recordId) => {
       batchId: item.batch_id,
       batchNumber: item.batch_number,
       expiryDate: item.expiry_date,
-      quantity: roundQuantity(Number(item.quantity))
-    }))
+      quantity: roundQuantity(Number(item.quantity)),
+      unitPrice: item.unit_price === null ? null : Number(item.unit_price),
+      sellingValue:
+        item.unit_price === null
+          ? null
+          : roundMoney(Number(item.quantity) * Number(item.unit_price))
+    })),
+    totals: {
+      quantity: roundQuantity(
+        items.reduce((total, item) => total + Number(item.quantity), 0)
+      ),
+      value: roundMoney(
+        items.reduce(
+          (total, item) =>
+            total +
+            (item.unit_price === null ? 0 : Number(item.quantity) * Number(item.unit_price)),
+          0
+        )
+      )
+    }
   };
 };
 

@@ -74,7 +74,8 @@ const listBatches = async ({
 }) => {
   const params = [healthcareCentreId, drugId || null, status || null, expiryStatus || null, search || null, nearExpiryDays];
   const { rows } = await query(
-    `SELECT b.id, b.batch_number, b.expiry_date, b.quantity, b.unit_cost, b.received_date,
+    `SELECT b.id, b.batch_number, b.expiry_date, b.quantity, b.unit_cost, b.selling_price,
+            b.received_date,
             b.supplier_reference, b.status, b.created_at,
             d.id AS drug_id, d.code AS drug_code, d.name AS drug_name, d.unit_of_measure,
             (b.expiry_date - CURRENT_DATE) AS days_to_expiry,

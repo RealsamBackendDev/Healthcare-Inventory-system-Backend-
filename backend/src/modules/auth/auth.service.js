@@ -28,6 +28,37 @@ const selectMembership = (memberships, healthcareCentreId) => {
   return centreMembership || memberships[0] || null;
 };
 
+const buildVendorSession = async (user, vendor) => {
+  const permissions = await repository.getPermissions(vendor.role_id);
+
+  return {
+    token: signToken(user, null),
+    user: {
+      id: user.id,
+      email: user.email,
+      fullName: user.full_name,
+      mustChangePassword: user.must_change_password
+    },
+    memberships: [],
+    activeCentre: null,
+    activeLocalGovernment: null,
+    scopeType: 'vendor',
+    vendor: {
+      id: vendor.vendor_id,
+      code: vendor.vendor_code,
+      legalName: vendor.legal_name,
+      status: vendor.status,
+      stateId: vendor.state_id,
+      stateName: vendor.state_name || null
+    },
+    role: {
+      code: vendor.role_code,
+      name: vendor.role_name
+    },
+    permissions
+  };
+};
+
 const buildSessionForMembership = async (user, memberships, membership) => {
   const permissions = await repository.getPermissions(membership.role_id);
 
@@ -64,6 +95,7 @@ const buildSessionForMembership = async (user, memberships, membership) => {
       stateName: membership.state_name
     },
     scopeType: membership.healthcare_centre_id ? 'facility' : 'local_government',
+    vendor: null,
     role: {
       code: membership.role_code,
       name: membership.role_name
@@ -83,6 +115,18 @@ const buildSession = async (user, memberships, healthcareCentreId) => {
   }
 
   return buildSessionForMembership(user, memberships, membership);
+};
+
+const buildSessionForAccount = async (user, memberships, healthcareCentreId) => {
+  if (memberships.length === 0) {
+    const vendor = await repository.getVendorAccount(user.id);
+    if (!vendor) {
+      throw new AuthenticationError('This account has no active membership', 'NO_MEMBERSHIP');
+    }
+    return buildVendorSession(user, vendor);
+  }
+
+  return buildSession(user, memberships, healthcareCentreId);
 };
 
 const login = async ({ email, password, ipAddress }) => {
@@ -112,11 +156,34 @@ const login = async ({ email, password, ipAddress }) => {
   }
 
   const memberships = await repository.getMemberships(user.id);
-  if (memberships.length === 0) {
+  const vendor = memberships.length === 0 ? await repository.getVendorAccount(user.id) : null;
+
+  if (memberships.length === 0 && !vendor) {
     throw new AuthenticationError('This account has no active membership', 'NO_MEMBERSHIP');
   }
 
   await repository.recordSuccessfulLogin(user.id);
+
+  if (vendor) {
+    const session = await buildVendorSession(user, vendor);
+
+    await recordAudit(
+      { query },
+      {
+        vendorId: vendor.vendor_id,
+        actor: { id: user.id, fullName: user.full_name },
+        actorRoleCode: vendor.role_code,
+        actorScopeType: 'vendor',
+        action: 'auth.login',
+        entityType: 'user',
+        entityId: user.id,
+        summary: 'Vendor signed in',
+        newValues: { email: user.email, ipAddress: ipAddress || null }
+      }
+    );
+
+    return { ...session, expiresIn: environment.jwt.expiresIn };
+  }
 
   const session = await buildSession(user, memberships);
   const membership = selectMembership(memberships);
@@ -146,7 +213,7 @@ const getProfile = async (userId, healthcareCentreId) => {
     throw new NotFoundError('User account was not found');
   }
   const memberships = await repository.getMemberships(user.id);
-  return buildSession(user, memberships, healthcareCentreId);
+  return buildSessionForAccount(user, memberships, healthcareCentreId);
 };
 
 const switchMembership = async ({ actor, membershipId }) => {
@@ -171,12 +238,12 @@ const switchMembership = async ({ actor, membershipId }) => {
     {
       healthcareCentreId: membership.healthcare_centre_id,
       localGovernmentId: membership.local_government_id,
-      actor: { id: user.id, fullName: user.full_name },
+      actor: { id: actor.id, fullName: actor.fullName },
       actorRoleCode: membership.role_code,
       actorScopeType: membership.healthcare_centre_id ? 'facility' : 'local_government',
       action: 'auth.membership_switched',
       entityType: 'user',
-      entityId: user.id,
+      entityId: actor.id,
       summary: `Switched to ${membership.centre_name || membership.local_government_name}`,
       newValues: { membershipId: membership.id, roleCode: membership.role_code }
     }
@@ -191,6 +258,7 @@ const logout = async (actor, scope) =>
     await recordAudit(client, {
       healthcareCentreId: scope.healthcareCentreId,
       localGovernmentId: scope.localGovernmentId,
+      vendorId: scope.vendorId,
       actor,
       actorRoleCode: scope.roleCode,
       actorScopeType: scope.scopeType,
@@ -220,6 +288,7 @@ const changePassword = async ({ actor, scope, currentPassword, newPassword }) =>
     await recordAudit(client, {
       healthcareCentreId: scope.healthcareCentreId,
       localGovernmentId: scope.localGovernmentId,
+      vendorId: scope.vendorId,
       actor,
       actorRoleCode: scope.roleCode,
       actorScopeType: scope.scopeType,
@@ -233,7 +302,7 @@ const changePassword = async ({ actor, scope, currentPassword, newPassword }) =>
 
   const memberships = await repository.getMemberships(actor.id);
   const refreshedUser = await repository.findById(actor.id);
-  return buildSession(
+  return buildSessionForAccount(
     { ...refreshedUser, token_version: updated.token_version },
     memberships,
     scope.healthcareCentreId
